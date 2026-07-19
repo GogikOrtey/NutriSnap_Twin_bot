@@ -1,3 +1,4 @@
+import json
 import os
 from dotenv import load_dotenv
 from google import genai
@@ -88,6 +89,19 @@ def analyze_food_local_photo(image_path):
     
     return response_text
 
+# Форматирует FoodAnalysis в читаемый блок для пользователя (блюдо + КБЖУ).
+# Используется в __main__ рядом с сырым JSON-выводом.
+def format_food_analysis(analysis: FoodAnalysis) -> str:
+    return (
+        f"🍽  {analysis.dish}\n"
+        f"\n"
+        f"📋 Пищевая ценность:\n"
+        f"• 🔥 Калорийность: {analysis.calories} ккал\n"
+        f"• 🥩 Белки: {analysis.proteins} г\n"
+        f"• 🥑 Жиры: {analysis.fats} г\n"
+        f"• 🍞 Углеводы: {analysis.carbs} г"
+    )
+
 # Точка входа
 if __name__ == "__main__":
     photo_path = "img_1.jpg"
@@ -99,5 +113,10 @@ if __name__ == "__main__":
         if result:
             print("\nИтоговый ответ от Gemini (JSON):")
             print(result)
+            try:
+                analysis = FoodAnalysis.model_validate(json.loads(result))
+                print("\n" + format_food_analysis(analysis))
+            except Exception as e:
+                print(f"\nНе удалось отформатировать ответ: {e}")
         else:
             print("\nК сожалению, все 4 попытки завершились ошибкой из-за перегрузки серверов.")
