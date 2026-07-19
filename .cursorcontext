@@ -1,0 +1,70 @@
+# NutriSnap Twin Bot — контекст проекта
+
+Telegram-бот для учёта калорий по фото еды (NutriSnap). Сейчас проект на этапе прототипа: есть рабочий скрипт анализа локального фото через Gemini; сам Telegram-бот ещё не реализован.
+
+## Назначение
+
+Пользователь присылает фото блюда → модель распознаёт еду и возвращает калории и БЖУ (белки/жиры/углеводы) в структурированном JSON.
+
+## Структура
+
+```
+NutriSnap_Twin_bot/
+├── test_3.py          # Актуальный прототип анализа фото (Gemini + structured output)
+├── main_1.py          # Заготовка точки входа бота (пока пустой)
+├── img_1.jpg          # Тестовое фото для локального запуска
+├── .env               # Секреты (не в git)
+├── .env.example       # Шаблон переменных окружения
+├── .gitignore         # Игнорирует .env и «API Gemini key.txt»
+└── Старое/            # Устаревшие эксперименты (не использовать как основу)
+    ├── test.py        # REST + Base64 + gemini-1.5-flash
+    └── test_2.py      # Старый SDK google.generativeai + Files API
+```
+
+## Актуальная логика анализа (`test_3.py`)
+
+- SDK: `google.genai` (`genai.Client`), ключ из `GEMINI_API_KEY` через `python-dotenv`.
+- Схема ответа (Pydantic `FoodAnalysis`): `dish`, `calories`, `proteins`, `fats`, `carbs`.
+- Фото загружается в Google Files API → `generate_content` с `response_mime_type=application/json` и `response_schema=FoodAnalysis` → файл удаляется (`client.files.delete`).
+- Очередь моделей с fallback (таймаут запроса `REQUEST_TIMEOUT_MS = 10000`, retries SDK отключены — fallback на уровне очереди):
+  1. `gemini-3.5-flash`
+  2. `gemini-flash-latest`
+  3. `gemini-3.1-flash-lite`
+  4. `gemini-2.5-flash`
+- При ошибке/таймауте модель попадает в `skipped_models` и больше не пробуется в этой очереди.
+- Точка входа: `__main__` читает `img_1.jpg` из корня проекта.
+
+## Переменные окружения
+
+| Переменная | Назначение |
+|---|---|
+| `GEMINI_API_KEY` | Ключ Google AI Studio / Gemini |
+| `TELEGRAM_BOT_API_KEY` | Ключ бота от BotFather (запланирован, в коде ещё не используется) |
+
+Шаблон: `.env.example`. Реальный `.env` в репозиторий не коммитить.
+
+## Зависимости (по коду)
+
+- `python-dotenv`
+- `google-genai` (пакет `google.genai`)
+- `pydantic`
+
+Отдельного `requirements.txt` в корне пока нет.
+
+## Эволюция подхода
+
+1. `Старое/test.py` — ручной REST, Base64 inline, промпт «верни JSON».
+2. `Старое/test_2.py` — deprecated `google.generativeai`, Files API, свободный текст.
+3. `test_3.py` — текущий канон: новый SDK, Files API, structured output + очередь моделей.
+
+## Планируемое развитие
+
+- Telegram-бот на базе `TELEGRAM_BOT_API_KEY` (ожидаемая точка входа — `main_1.py` или аналог).
+- Приём фото из Telegram → анализ логикой из `test_3.py` → ответ пользователю с КБЖУ.
+- Учёт/история питания (пока не реализовано).
+
+## Важные договорённости
+
+- Для функций — краткий комментарий-аннотация: зачем, что делает, где используется.
+- Не опираться на код в `Старое/` при новых изменениях.
+- Секреты только в `.env`; файлы вроде `API Gemini key.txt` в git не попадают.
