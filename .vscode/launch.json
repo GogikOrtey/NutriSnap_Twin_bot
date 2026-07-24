@@ -1,0 +1,30 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run main_1 (no debug)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main_1.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true,
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "noDebug": true
+    },
+    {
+      "name": "Debug main_1",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main_1.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true,
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  ]
+}
