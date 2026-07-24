@@ -1,55 +1,51 @@
 # NutriSnap Twin Bot — контекст проекта
 
-Telegram-бот для учёта калорий по фото еды (NutriSnap). Прототип: локальный анализ фото через Gemini готов; Telegram-бот (@nutrisnap_ultra_bot) — минимальный каркас в `test_4_tg_bot.py` (/start + кнопка).
+Telegram-бот для учёта калорий по фото еды (NutriSnap). Точка входа: `main_1.py` — приём фото в Telegram → анализ через Gemini → ответ с КБЖУ.
 
 ## Назначение
 
-Пользователь присылает фото блюда → модель распознаёт еду и возвращает калории и БЖУ (белки/жиры/углеводы) в структурированном JSON.
+Пользователь присылает фото блюда → модель распознаёт еду и возвращает калории и БЖУ (белки/жиры/углеводы) в структурированном JSON, бот отвечает читаемой сводкой.
 
 ## Структура
 
 ```
 NutriSnap_Twin_bot/
-├── test_3_local.py    # Актуальный прототип анализа фото (Gemini + structured output)
-├── test_4_tg_bot.py   # Каркас Telegram-бота @nutrisnap_ultra_bot (aiogram)
-├── main_1.py          # Заготовка точки входа бота (пока пустой)
+├── main_1.py          # Точка входа: Telegram-бот + анализ фото (Gemini)
+├── test_3_local.py    # Локальный прототип анализа фото (без Telegram)
+├── test_4_tg_bot.py   # Минимальный каркас бота (/start + кнопка), без Gemini
 ├── img_1.jpg          # Тестовое фото для локального запуска
 ├── .env               # Секреты (не в git)
 ├── .env.example       # Шаблон переменных окружения
 ├── .gitignore         # Игнорирует .env и «API Gemini key.txt»
 └── Старое/            # Устаревшие эксперименты (не использовать как основу)
-    ├── test.py        # REST + Base64 + gemini-1.5-flash
-    └── test_2.py      # Старый SDK google.generativeai + Files API
 ```
 
-## Актуальная логика анализа (`test_3.py`)
+## Актуальная логика (`main_1.py`)
 
-- SDK: `google.genai` (`genai.Client`), ключ из `GEMINI_API_KEY` через `python-dotenv`.
+- Библиотека бота: `aiogram` 3.x, long polling (`dp.start_polling`).
+- `/start` → краткая инструкция «пришли фото».
+- Фото (`F.photo`) → скачивание во временный `.jpg` → `analyze_food_photo` (через `asyncio.to_thread`) → `format_food_analysis` → ответ в чат; temp-файл удаляется.
+- SDK анализа: `google.genai` (`genai.Client`), ключ `GEMINI_API_KEY`.
 - Схема ответа (Pydantic `FoodAnalysis`): `dish`, `calories`, `proteins`, `fats`, `carbs`.
-- Фото загружается в Google Files API → `generate_content` с `response_mime_type=application/json` и `response_schema=FoodAnalysis` → файл удаляется (`client.files.delete`).
-- Очередь моделей с fallback (таймаут запроса `REQUEST_TIMEOUT_MS = 10000`, retries SDK отключены — fallback на уровне очереди):
+- Фото → Google Files API → `generate_content` (JSON + `response_schema`) → `client.files.delete` в `finally`.
+- Очередь моделей (`MODELS_QUEUE`, таймаут `REQUEST_TIMEOUT_MS = 10000`, retries SDK = 1):
   1. `gemini-3.5-flash`
   2. `gemini-flash-latest`
   3. `gemini-3.1-flash-lite`
   4. `gemini-2.5-flash`
-- При ошибке/таймауте модель попадает в `skipped_models` и больше не пробуется в этой очереди.
-- Точка входа: `__main__` читает `img_1.jpg` из корня проекта; печатает сырой JSON и читаемый блок через `format_food_analysis` (🍽 блюдо + КБЖУ).
+- При ошибке/таймауте модель в `skipped_models` и больше не пробуется в этой очереди.
+- Запуск: `python main_1.py` (нужны оба ключа в `.env`; останови предыдущий процесс бота, если был).
+
+Локальная отладка без Telegram: `python test_3_local.py` (читает `img_1.jpg`).
 
 ## Переменные окружения
 
 | Переменная | Назначение |
 |---|---|
 | `GEMINI_API_KEY` | Ключ Google AI Studio / Gemini |
-| `TELEGRAM_BOT_API_KEY` | Токен бота @nutrisnap_ultra_bot (BotFather); читается в `test_4_tg_bot.py` |
+| `TELEGRAM_BOT_API_KEY` | Токен бота @nutrisnap_ultra_bot (BotFather) |
 
 Шаблон: `.env.example`. Реальный `.env` в репозиторий не коммитить.
-
-## Telegram-бот (`test_4_tg_bot.py`)
-
-- Библиотека: `aiogram` 3.x (`Bot` + `Dispatcher`, long polling через `dp.start_polling`).
-- `/start` → приветствие + inline-кнопка «Написать 1» (`callback_data=write_one`).
-- Нажатие кнопки → сообщение `1` в чат.
-- Запуск: `python test_4_tg_bot.py` (перед этим останови предыдущий процесс бота, если был).
 
 ## Зависимости (по коду)
 
@@ -60,15 +56,8 @@ NutriSnap_Twin_bot/
 
 Отдельного `requirements.txt` в корне пока нет.
 
-## Эволюция подхода
-
-1. `Старое/test.py` — ручной REST, Base64 inline, промпт «верни JSON».
-2. `Старое/test_2.py` — deprecated `google.generativeai`, Files API, свободный текст.
-3. `test_3.py` — текущий канон: новый SDK, Files API, structured output + очередь моделей.
-
 ## Планируемое развитие
 
-- Расширить `test_4_tg_bot.py` (или перенести в `main_1.py`): приём фото → анализ из `test_3_local.py` → ответ с КБЖУ.
 - Учёт/история питания (пока не реализовано).
 
 ## Важные договорённости
