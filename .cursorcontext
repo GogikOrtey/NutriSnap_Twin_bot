@@ -11,7 +11,7 @@ Telegram-бот для учёта калорий по фото еды (NutriSnap
 ```
 NutriSnap_Twin_bot/
 ├── test_3_local.py    # Актуальный прототип анализа фото (Gemini + structured output)
-├── test_4_tg_bot.py   # Каркас Telegram-бота @nutrisnap_ultra_bot (python-telegram-bot)
+├── test_4_tg_bot.py   # Каркас Telegram-бота @nutrisnap_ultra_bot (aiogram)
 ├── main_1.py          # Заготовка точки входа бота (пока пустой)
 ├── img_1.jpg          # Тестовое фото для локального запуска
 ├── .env               # Секреты (не в git)
@@ -46,17 +46,17 @@ NutriSnap_Twin_bot/
 
 ## Telegram-бот (`test_4_tg_bot.py`)
 
-- Библиотека: `python-telegram-bot` v22+ (async Application, long polling).
+- Библиотека: `aiogram` 3.x (`Bot` + `Dispatcher`, long polling через `dp.start_polling`).
 - `/start` → приветствие + inline-кнопка «Написать 1» (`callback_data=write_one`).
 - Нажатие кнопки → сообщение `1` в чат.
-- Запуск: `python test_4_tg_bot.py`.
+- Запуск: `python test_4_tg_bot.py` (перед этим останови предыдущий процесс бота, если был).
 
 ## Зависимости (по коду)
 
 - `python-dotenv`
 - `google-genai` (пакет `google.genai`)
 - `pydantic`
-- `python-telegram-bot`
+- `aiogram`
 
 Отдельного `requirements.txt` в корне пока нет.
 

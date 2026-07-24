@@ -1,8 +1,10 @@
+import asyncio
 import os
 
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 load_dotenv()
 
@@ -11,20 +13,24 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_API_KEY")
 # Callback-данные кнопки «Написать 1»
 CALLBACK_WRITE_ONE = "write_one"
 
+dp = Dispatcher()
+
 
 # Собирает клавиатуру с одной кнопкой «Написать 1».
 # Используется в /start при отправке приветствия.
 def build_start_keyboard() -> InlineKeyboardMarkup:
-    keyboard = [
-        [InlineKeyboardButton("Написать 1", callback_data=CALLBACK_WRITE_ONE)],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Написать 1", callback_data=CALLBACK_WRITE_ONE)],
+        ]
+    )
 
 
 # Обработчик /start: шлёт приветствие и кнопку «Написать 1».
-# Регистрируется в Application как CommandHandler("start", ...).
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
+# Регистрируется через декоратор dp.message(CommandStart()).
+@dp.message(CommandStart())
+async def start(message: Message) -> None:
+    await message.answer(
         "Привет! Я @nutrisnap_ultra_bot.\n"
         "Нажми кнопку ниже — я отвечу в чат.",
         reply_markup=build_start_keyboard(),
@@ -32,29 +38,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # Обработчик нажатия кнопки «Написать 1»: отвечает текстом «1».
-# Регистрируется в Application как CallbackQueryHandler.
-async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == CALLBACK_WRITE_ONE:
-        await query.message.reply_text("1")
+# Регистрируется через декоратор dp.callback_query(...).
+@dp.callback_query(F.data == CALLBACK_WRITE_ONE)
+async def on_write_one(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.answer("1")
 
 
 # Точка входа: поднимает long-polling бота с обработчиками /start и кнопки.
-def main() -> None:
+async def main() -> None:
     if not BOT_TOKEN:
         raise SystemExit(
             "TELEGRAM_BOT_API_KEY не найден. Добавь его в .env и перезапусти скрипт."
         )
 
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(on_button))
-
+    bot = Bot(token=BOT_TOKEN)
     print("Бот @nutrisnap_ultra_bot запущен. Нажми Ctrl+C для остановки.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
