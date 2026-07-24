@@ -1,6 +1,6 @@
 # NutriSnap Twin Bot — контекст проекта
 
-Telegram-бот для учёта калорий по фото еды (NutriSnap). Сейчас проект на этапе прототипа: есть рабочий скрипт анализа локального фото через Gemini; сам Telegram-бот ещё не реализован.
+Telegram-бот для учёта калорий по фото еды (NutriSnap). Прототип: локальный анализ фото через Gemini готов; Telegram-бот (@nutrisnap_ultra_bot) — минимальный каркас в `test_4_tg_bot.py` (/start + кнопка).
 
 ## Назначение
 
@@ -10,7 +10,8 @@ Telegram-бот для учёта калорий по фото еды (NutriSnap
 
 ```
 NutriSnap_Twin_bot/
-├── test_3.py          # Актуальный прототип анализа фото (Gemini + structured output)
+├── test_3_local.py    # Актуальный прототип анализа фото (Gemini + structured output)
+├── test_4_tg_bot.py   # Каркас Telegram-бота @nutrisnap_ultra_bot (python-telegram-bot)
 ├── main_1.py          # Заготовка точки входа бота (пока пустой)
 ├── img_1.jpg          # Тестовое фото для локального запуска
 ├── .env               # Секреты (не в git)
@@ -39,15 +40,23 @@ NutriSnap_Twin_bot/
 | Переменная | Назначение |
 |---|---|
 | `GEMINI_API_KEY` | Ключ Google AI Studio / Gemini |
-| `TELEGRAM_BOT_API_KEY` | Ключ бота от BotFather (запланирован, в коде ещё не используется) |
+| `TELEGRAM_BOT_API_KEY` | Токен бота @nutrisnap_ultra_bot (BotFather); читается в `test_4_tg_bot.py` |
 
 Шаблон: `.env.example`. Реальный `.env` в репозиторий не коммитить.
+
+## Telegram-бот (`test_4_tg_bot.py`)
+
+- Библиотека: `python-telegram-bot` v22+ (async Application, long polling).
+- `/start` → приветствие + inline-кнопка «Написать 1» (`callback_data=write_one`).
+- Нажатие кнопки → сообщение `1` в чат.
+- Запуск: `python test_4_tg_bot.py`.
 
 ## Зависимости (по коду)
 
 - `python-dotenv`
 - `google-genai` (пакет `google.genai`)
 - `pydantic`
+- `python-telegram-bot`
 
 Отдельного `requirements.txt` в корне пока нет.
 
@@ -59,8 +68,7 @@ NutriSnap_Twin_bot/
 
 ## Планируемое развитие
 
-- Telegram-бот на базе `TELEGRAM_BOT_API_KEY` (ожидаемая точка входа — `main_1.py` или аналог).
-- Приём фото из Telegram → анализ логикой из `test_3.py` → ответ пользователю с КБЖУ.
+- Расширить `test_4_tg_bot.py` (или перенести в `main_1.py`): приём фото → анализ из `test_3_local.py` → ответ с КБЖУ.
 - Учёт/история питания (пока не реализовано).
 
 ## Важные договорённости
