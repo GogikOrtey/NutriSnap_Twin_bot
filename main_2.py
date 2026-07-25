@@ -379,13 +379,12 @@ def ensure_min_message_width(
 ) -> str:
     lines = text.split("\n")
     if not lines:
-        # return "\u00A0" * min_width
-        return " " * min_width
+        return "⠀" * min_width # Использую прозрачный невидимый символ: "⠀"
     visible_lens = [len(re.sub(r"<[^>]+>", "", line)) for line in lines]
     if max(visible_lens) >= min_width:
         return text
     pad = min_width - visible_lens[0]
-    lines[0] = lines[0] + (" " * pad)
+    lines[0] = lines[0] + ("⠀" * pad)
     return "\n".join(lines)
 #endregion
 
