@@ -1,3 +1,5 @@
+raise SystemExit("🟧 Файл устарел, запускайте main_2.py")
+
 import asyncio
 import json
 import os
