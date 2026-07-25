@@ -400,7 +400,7 @@ async def schedule_auto_confirm(
         )
     except Exception:
         pass
-    await bot.send_message(chat_id, "✅ Учтено")
+    await bot.send_message(chat_id, "Учтено ✅")
 
 
 # Показывает превью КБЖУ, ставит FSM confirming и запускает таймер 10с.
@@ -755,7 +755,7 @@ async def on_confirm(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await callback.message.answer("✅ Учтено")
+    await callback.message.answer("Учтено ✅")
 
 
 # Callback ✏️: показывает меню правок с reply-клавиатурой.
