@@ -39,8 +39,8 @@ DEFAULT_PORTION_G = 100.0
 
 # Очередь моделей для попыток (fallback при ошибке/таймауте).
 MODELS_QUEUE = [
-    "gemini-3.5-flash",
     "gemini-flash-latest",
+    "gemini-3.5-flash",
     "gemini-3.1-flash-lite",
     "gemini-2.5-flash",
 ]
