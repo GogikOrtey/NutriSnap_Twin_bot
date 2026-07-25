@@ -43,8 +43,9 @@ main_2.py — основная точка входа Telegram-бота NutriSnap
    normalize_label_result — для этикетки без объёма подставляет 100 г.
    recalc_by_weight — пропорциональный пересчёт ккал/БЖУ на новый вес.
    format_food_result — человекочитаемое HTML-превью (блюдо, порция, КБЖУ).
-   ensure_min_message_width — добивает текст до MIN_CONFIRM_MSG_WIDTH, чтобы
-   пузырь Telegram не был уже ряда кнопок ✏️/✅.
+   ensure_min_message_width — добивает текст до MIN_CONFIRM_MSG_WIDTH
+   (WIDTH_PAD_CHAR), чтобы пузырь не был уже ряда кнопок ✏️/✅.
+   После ✅/автоподтверждения превью переписывается без паддинга.
 
 7. Клавиатуры
    Inline: подтверждение еды (✏️/✅), этикетки (+⚖️), отмена ожидания подсказки.
@@ -58,6 +59,7 @@ main_2.py — основная точка входа Telegram-бота NutriSnap
 9. Confirm UI (логика подтверждения)
    schedule_auto_confirm — через CONFIRM_TIMEOUT_SEC сек сам «сохраняет»,
    если пользователь не нажал кнопки (токен confirm_token ещё актуален).
+   finalize_confirmed_preview — снимает кнопки и паддинг ширины после ✅.
    show_confirm_preview — показывает превью, ставит состояние confirming,
    запускает таймер.
    handle_ai_result — разводит ветки status после ответа ИИ: no_food /
@@ -136,6 +138,8 @@ DEFAULT_PORTION_G = 100.0
 
 # Мин. ширина превью (символов) с кнопками ✏️/✅ — иначе кнопки длиннее сообщения.
 MIN_CONFIRM_MSG_WIDTH = 30
+# Прозрачный символ-паддинг ширины (braille blank); при ✅ снимается вместе с кнопками.
+WIDTH_PAD_CHAR = "⠀"
 
 # Очередь моделей для попыток (fallback при ошибке/таймауте).
 MODELS_QUEUE = [
@@ -372,19 +376,20 @@ def format_food_result(result: FoodResult) -> str:
 
 # Добивает текст до min_width по самой длинной видимой строке (без HTML-тегов).
 # Telegram рисует ширину пузыря по max-строке; если она короче кнопок ✏️/✅ —
-# ряд выглядит шире сообщения. Паддинг — неразрывные пробелы в первой строке.
-# Используется в show_confirm_preview перед отправкой/редактированием превью.
+# ряд выглядит шире сообщения. Паддинг — WIDTH_PAD_CHAR в первой строке.
+# Используется в show_confirm_preview; при подтверждении снимается
+# (finalize_confirmed_preview пишет format_food_result без добивки).
 def ensure_min_message_width(
     text: str, min_width: int = MIN_CONFIRM_MSG_WIDTH
 ) -> str:
     lines = text.split("\n")
     if not lines:
-        return "⠀" * min_width # Использую прозрачный невидимый символ: "⠀"
+        return WIDTH_PAD_CHAR * min_width
     visible_lens = [len(re.sub(r"<[^>]+>", "", line)) for line in lines]
     if max(visible_lens) >= min_width:
         return text
     pad = min_width - visible_lens[0]
-    lines[0] = lines[0] + ("⠀" * pad)
+    lines[0] = lines[0] + (WIDTH_PAD_CHAR * pad)
     return "\n".join(lines)
 #endregion
 
@@ -480,6 +485,32 @@ def parse_food_result(raw: str | None) -> FoodResult | None:
 #endregion
 
 #region Confirm UI
+# Убирает кнопки и переписывает превью без WIDTH_PAD_CHAR (обычная ширина пузыря).
+# Используется при ✅ и автоподтверждении.
+async def finalize_confirmed_preview(
+    result: FoodResult,
+    *,
+    message: Message | None = None,
+    bot: Bot | None = None,
+    chat_id: int | None = None,
+    message_id: int | None = None,
+) -> None:
+    text = format_food_result(result)
+    try:
+        if message is not None:
+            await message.edit_text(text, reply_markup=None, parse_mode="HTML")
+        elif bot is not None and chat_id is not None and message_id is not None:
+            await bot.edit_message_text(
+                text,
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=None,
+                parse_mode="HTML",
+            )
+    except Exception:
+        pass
+
+
 # Запускает таймер автоподтверждения; срабатывает только если confirm_token актуален.
 # Используется сразу после показа превью с кнопками.
 async def schedule_auto_confirm(
@@ -508,12 +539,9 @@ async def schedule_auto_confirm(
     result = FoodResult.model_validate(result_data)
     save_to_console(result)
     await state.clear()
-    try:
-        await bot.edit_message_reply_markup(
-            chat_id=chat_id, message_id=preview_message_id, reply_markup=None
-        )
-    except Exception:
-        pass
+    await finalize_confirmed_preview(
+        result, bot=bot, chat_id=chat_id, message_id=preview_message_id
+    )
     await bot.send_message(chat_id, "Учтено ✅")
 
 
@@ -653,7 +681,7 @@ async def start(message: Message, state: FSMContext) -> None:
 @dp.message(F.photo)
 async def on_photo(message: Message, state: FSMContext, bot: Bot) -> None:
     await state.clear()
-    status_msg = await message.answer("Анализирую фото…")
+    status_msg = await message.answer("✨ Анализирую фото…")
     photo = message.photo[-1]
     file_id = photo.file_id
     hint = (message.caption or "").strip() or None
@@ -806,7 +834,7 @@ async def on_text_food(message: Message, state: FSMContext, bot: Bot) -> None:
         await message.answer("Напишите, что съели, или сколько ккал — либо пришлите фото")
         return
 
-    status_msg = await message.answer("Анализирую описание…")
+    status_msg = await message.answer("✨ Анализирую описание…")
     try:
         raw = await asyncio.to_thread(analyze_food_text, text)
         result = parse_food_result(raw)
@@ -865,10 +893,7 @@ async def on_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     result = FoodResult.model_validate(result_data)
     save_to_console(result)
     await state.clear()
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    await finalize_confirmed_preview(result, message=callback.message)
     await callback.message.answer("Учтено ✅")
 
 
