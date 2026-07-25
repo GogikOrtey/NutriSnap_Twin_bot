@@ -1,42 +1,41 @@
 # NutriSnap Twin Bot — контекст проекта
 
-Telegram-бот для учёта калорий по фото еды (NutriSnap). Точка входа: `main_1.py` — приём фото в Telegram → анализ через Gemini → ответ с КБЖУ.
+Telegram-бот для учёта калорий по фото/тексту (NutriSnap). Актуальная точка входа: `main_2.py` (FSM-флоу). Прототип v0.1: `main_1.py` (только фото → КБЖУ без confirm).
 
 ## Назначение
 
-Пользователь присылает фото блюда → модель распознаёт еду и возвращает калории и БЖУ (белки/жиры/углеводы) в структурированном JSON, бот отвечает читаемой сводкой.
+Пользователь присылает фото блюда (опционально с подписью) или текст → Gemini возвращает структурированный JSON со `status` → бот ведёт по веткам (unclear / no_food / label / recognized) → превью с кнопками и автоподтверждением → итог печатается в консоль (заглушка дневника).
 
 ## Структура
 
 ```
 NutriSnap_Twin_bot/
-├── main_1.py          # Точка входа: Telegram-бот + анализ фото (Gemini)
+├── main_2.py          # Актуальная точка входа: полный флоу учёта еды
+├── main_1.py          # v0.1: фото → Gemini → текст КБЖУ (без FSM)
 ├── test_3_local.py    # Локальный прототип анализа фото (без Telegram)
-├── test_4_tg_bot.py   # Минимальный каркас бота (/start + кнопка), без Gemini
+├── test_4_tg_bot.py   # Минимальный каркас бота (/start + кнопка)
 ├── img_1.jpg          # Тестовое фото для локального запуска
 ├── .env               # Секреты (не в git)
 ├── .env.example       # Шаблон переменных окружения
-├── .gitignore         # Игнорирует .env и «API Gemini key.txt»
+├── .gitignore
+├── backlog.md         # Личный бэклог (не править агентом)
 └── Старое/            # Устаревшие эксперименты (не использовать как основу)
 ```
 
-## Актуальная логика (`main_1.py`)
+## Актуальная логика (`main_2.py`)
 
-- Библиотека бота: `aiogram` 3.x, long polling (`dp.start_polling`).
-- `/start` → краткая инструкция «пришли фото».
-- Фото (`F.photo`) → скачивание во временный `.jpg` → `analyze_food_photo` (через `asyncio.to_thread`) → `format_food_analysis` → ответ в чат; temp-файл удаляется.
-- SDK анализа: `google.genai` (`genai.Client`), ключ `GEMINI_API_KEY`.
-- Схема ответа (Pydantic `FoodAnalysis`): `dish`, `calories`, `proteins`, `fats`, `carbs`.
-- Фото → Google Files API → `generate_content` (JSON + `response_schema`) → `client.files.delete` в `finally`.
-- Очередь моделей (`MODELS_QUEUE`, таймаут `REQUEST_TIMEOUT_MS = 10000`, retries SDK = 1):
-  1. `gemini-3.5-flash`
-  2. `gemini-flash-latest`
-  3. `gemini-3.1-flash-lite`
-  4. `gemini-2.5-flash`
-- При ошибке/таймауте модель в `skipped_models` и больше не пробуется в этой очереди.
-- Запуск: `python main_1.py` (нужны оба ключа в `.env`; останови предыдущий процесс бота, если был).
-
-Локальная отладка без Telegram: `python test_3_local.py` (читает `img_1.jpg`).
+- Библиотека: `aiogram` 3.x + `MemoryStorage` (FSM), long polling.
+- SDK: `google.genai`, ключ `GEMINI_API_KEY`; токен бота `TELEGRAM_BOT_API_KEY`.
+- Очередь моделей (`MODELS_QUEUE`, таймаут 10 с, retries SDK = 1):  
+  `gemini-3.5-flash` → `gemini-flash-latest` → `gemini-3.1-flash-lite` → `gemini-2.5-flash`.
+- Схема `FoodResult`: `status`, `dish`, `calories`, `proteins`, `fats`, `carbs`, `portion_g`, `portion_known`, `is_label`.
+- Статусы ИИ: `recognized` | `unclear` | `no_food` | `label` | `bad_desc`.
+- Входы: фото / фото+caption / только текст (`analyze_food_photo`, `analyze_food_text`).
+- FSM: `confirming` | `waiting_hint` | `waiting_weight`.
+- Confirm UI: ✏️ / ✅ (+ ⚖️ для этикетки); авто ✅ через 10 с (`confirm_token`).
+- Этикетка без объёма → `portion_g = 100`; ⚖️ → пропорциональный пересчёт КБЖУ.
+- «Сохранение»: `save_to_console` (print JSON). Дневник, БД, дневной лимит — не реализованы.
+- Запуск: `python main_2.py` (останови предыдущий polling-процесс бота, если был).
 
 ## Переменные окружения
 
@@ -45,23 +44,20 @@ NutriSnap_Twin_bot/
 | `GEMINI_API_KEY` | Ключ Google AI Studio / Gemini |
 | `TELEGRAM_BOT_API_KEY` | Токен бота @nutrisnap_ultra_bot (BotFather) |
 
-Шаблон: `.env.example`. Реальный `.env` в репозиторий не коммитить.
-
 ## Зависимости (по коду)
 
-- `python-dotenv`
-- `google-genai` (пакет `google.genai`)
-- `pydantic`
-- `aiogram`
+- `python-dotenv`, `google-genai`, `pydantic`, `aiogram`
 
 Отдельного `requirements.txt` в корне пока нет.
 
 ## Планируемое развитие
 
-- Учёт/история питания (пока не реализовано).
+- Дневник питания / БД вместо печати JSON в консоль.
+- Дневной лимит распознаваний (на ветке «Неверно» → подсказка).
+- Сводка дня (ккал/БЖУ) — см. mock в `backlog.md`.
 
 ## Важные договорённости
 
 - Для функций — краткий комментарий-аннотация: зачем, что делает, где используется.
 - Не опираться на код в `Старое/` при новых изменениях.
-- Секреты только в `.env`; файлы вроде `API Gemini key.txt` в git не попадают.
+- Секреты только в `.env`.
