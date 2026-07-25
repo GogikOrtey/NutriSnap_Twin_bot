@@ -87,6 +87,7 @@ main_2.py — основная точка входа Telegram-бота NutriSnap
     корректная остановка.
 """
 
+
 import asyncio
 import html
 import json
