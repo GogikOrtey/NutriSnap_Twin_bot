@@ -375,7 +375,7 @@ async def schedule_auto_confirm(
         )
     except Exception:
         pass
-    await bot.send_message(chat_id, "Учтено (автоподтверждение по таймауту).")
+    await bot.send_message(chat_id, "Учтено ✅ (автоподтверждение по таймауту)")
 
 
 # Показывает превью КБЖУ, ставит FSM confirming и запускает таймер 10с.
@@ -617,7 +617,7 @@ async def on_weight_text(message: Message, state: FSMContext) -> None:
     save_to_console(updated)
     await state.clear()
     await message.answer(
-        f"{format_food_result(updated)}\n\nУчтено (с пересчётом на {weight:g} г).",
+        f"{format_food_result(updated)}\n\nУчтено ✅ (с пересчётом на {weight:g} г).",
         parse_mode="HTML",
     )
 #endregion
@@ -697,7 +697,7 @@ async def on_confirm(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await callback.message.answer("Учтено.")
+    await callback.message.answer("Учтено ✅")
 
 
 # Callback ✏️: запрос текстовой подсказки (повтор с тем же фото, если есть).
