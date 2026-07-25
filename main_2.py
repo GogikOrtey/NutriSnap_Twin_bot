@@ -264,12 +264,12 @@ def format_food_result(result: FoodResult) -> str:
         portion = result.portion_g or DEFAULT_PORTION_G
         if result.portion_known:
             lines.append("")
-            lines.append(f"Значения рассчитаны на {portion:g} г (как на этикетке).")
+            lines.append(f"Значения рассчитаны на {portion:g} г (как на этикетке)")
         else:
             lines.append("")
             lines.append(
                 f"Объём на этикетке не указан — значения для стандартной порции "
-                f"{portion:g} г."
+                f"{portion:g} г"
             )
     return "\n".join(lines)
 #endregion
@@ -461,7 +461,7 @@ async def handle_ai_result(
     status_message: Message | None = None,
 ) -> None:
     if result.status == "no_food":
-        text = "Еда на фото не обнаружена."
+        text = "Еда на фото не обнаружена"
         if status_message is not None:
             await status_message.edit_text(text)
         else:
@@ -470,7 +470,7 @@ async def handle_ai_result(
         return
 
     if result.status == "bad_desc":
-        text = "Не поняли описание. Сфотографируйте еду заново."
+        text = "Не поняли описание. Сфотографируйте еду заново"
         if status_message is not None:
             await status_message.edit_text(text)
         else:
@@ -481,7 +481,7 @@ async def handle_ai_result(
     if result.status == "unclear":
         ask = (
             "На фото похоже на еду, но не удалось точно распознать.\n"
-            "Опишите текстом, что за еда на фото — или нажмите «Отмена»."
+            "Опишите текстом, что за еда на фото — или нажмите «Отмена»"
         )
         if status_message is not None:
             await status_message.edit_text(ask, reply_markup=build_cancel_keyboard())
@@ -493,7 +493,7 @@ async def handle_ai_result(
 
     if result.status in ("recognized", "label"):
         if result.calories is None:
-            text = "Не удалось оценить калорийность. Попробуйте другое фото или уточните текстом."
+            text = "Не удалось оценить калорийность. Попробуйте другое фото или уточните текстом"
             if status_message is not None:
                 await status_message.edit_text(text)
             else:
@@ -510,7 +510,7 @@ async def handle_ai_result(
         )
         return
 
-    text = "Не удалось обработать результат. Попробуйте ещё раз."
+    text = "Не удалось обработать результат. Попробуйте ещё раз"
     if status_message is not None:
         await status_message.edit_text(text)
     else:
@@ -529,7 +529,7 @@ async def start(message: Message, state: FSMContext) -> None:
         "\n"
         "Привет! Я @nutrisnap_ultra_bot.\n"
         "Пришли фото блюда (можно с подписью) или напиши текстом, "
-        "что съел / сколько ккал — оценю калорийность и БЖУ."
+        "что съел / сколько ккал — оценю калорийность и БЖУ"
     )
 #endregion
 
@@ -552,7 +552,7 @@ async def on_photo(message: Message, state: FSMContext, bot: Bot) -> None:
         if result is None:
             await status_msg.edit_text(
                 "Не удалось проанализировать фото: модели сейчас недоступны "
-                "или ответ не разобран. Попробуй ещё раз чуть позже."
+                "или ответ не разобран. Попробуй ещё раз чуть позже"
             )
             return
         await handle_ai_result(
@@ -565,7 +565,7 @@ async def on_photo(message: Message, state: FSMContext, bot: Bot) -> None:
         )
     except Exception as e:
         print(f"Ошибка при обработке фото: {e}")
-        await status_msg.edit_text("Произошла ошибка при обработке фото. Попробуй ещё раз.")
+        await status_msg.edit_text("Произошла ошибка при обработке фото. Попробуй ещё раз")
         await state.clear()
     finally:
         if temp_path is not None and temp_path.exists():
@@ -579,7 +579,7 @@ async def on_photo(message: Message, state: FSMContext, bot: Bot) -> None:
 async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
     hint = (message.text or "").strip()
     if not hint:
-        await message.answer("Напишите текстовую подсказку или нажмите «Отмена».")
+        await message.answer("Напишите текстовую подсказку или нажмите «Отмена»")
         return
 
     data = await state.get_data()
@@ -601,7 +601,7 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
             if result is None:
                 await status_msg.edit_text(
                     "Не удалось уточнить результат. Попробуйте другое описание "
-                    "или пришлите фото."
+                    "или пришлите фото"
                 )
                 return
             if result.status == "label":
@@ -618,7 +618,7 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
             )
         except Exception as e:
             print(f"Ошибка при уточнении текстового результата: {e}")
-            await status_msg.edit_text("Ошибка при уточнении. Попробуйте ещё раз.")
+            await status_msg.edit_text("Ошибка при уточнении. Попробуйте ещё раз")
         return
 
     status_msg = await message.answer("Уточняю по вашей подсказке…")
@@ -629,7 +629,7 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
         result = parse_food_result(raw)
         if result is None:
             await status_msg.edit_text(
-                "Не удалось уточнить результат. Попробуйте другое описание или новое фото."
+                "Не удалось уточнить результат. Попробуйте другое описание или новое фото"
             )
             return
         await handle_ai_result(
@@ -642,7 +642,7 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
         )
     except Exception as e:
         print(f"Ошибка при уточнении по подсказке: {e}")
-        await status_msg.edit_text("Ошибка при уточнении. Попробуйте ещё раз.")
+        await status_msg.edit_text("Ошибка при уточнении. Попробуйте ещё раз")
     finally:
         if temp_path is not None and temp_path.exists():
             temp_path.unlink(missing_ok=True)
@@ -665,7 +665,7 @@ async def on_weight_text(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     result_data = data.get("result")
     if not result_data:
-        await message.answer("Данные для пересчёта потеряны. Пришлите фото заново.")
+        await message.answer("Данные для пересчёта потеряны. Пришлите фото заново")
         await state.clear()
         return
 
@@ -674,7 +674,7 @@ async def on_weight_text(message: Message, state: FSMContext) -> None:
     save_to_console(updated)
     await state.clear()
     await message.answer(
-        f"{format_food_result(updated)}\n\nУчтено ✅ (с пересчётом на {weight:g} г).",
+        f"{format_food_result(updated)}\n\nУчтено ✅ (с пересчётом на {weight:g} г)",
         parse_mode="HTML",
         reply_markup=ReplyKeyboardRemove(),
     )
@@ -689,7 +689,7 @@ async def on_text_food(message: Message, state: FSMContext, bot: Bot) -> None:
     await state.clear()
     text = (message.text or "").strip()
     if not text:
-        await message.answer("Напишите, что съели, или сколько ккал — либо пришлите фото.")
+        await message.answer("Напишите, что съели, или сколько ккал — либо пришлите фото")
         return
 
     status_msg = await message.answer("Анализирую описание…")
@@ -699,23 +699,23 @@ async def on_text_food(message: Message, state: FSMContext, bot: Bot) -> None:
         if result is None:
             await status_msg.edit_text(
                 "Не удалось разобрать описание. Попробуйте сформулировать иначе "
-                "или пришлите фото."
+                "или пришлите фото"
             )
             return
         # Для чистого текста unclear/bad_desc обрабатываем мягче.
         if result.status == "unclear":
             await status_msg.edit_text(
                 "Не хватило данных для оценки. Уточните блюдо и порцию "
-                "или пришлите фото."
+                "или пришлите фото"
             )
             return
         if result.status == "bad_desc":
             await status_msg.edit_text(
-                "Не поняли описание. Напишите иначе или пришлите фото еды."
+                "Не поняли описание. Напишите иначе или пришлите фото еды"
             )
             return
         if result.status == "no_food":
-            await status_msg.edit_text("По этому тексту еду учесть не удалось.")
+            await status_msg.edit_text("По этому тексту еду учесть не удалось")
             return
         if result.status == "label":
             result = result.model_copy(update={"status": "recognized", "is_label": False})
@@ -729,7 +729,7 @@ async def on_text_food(message: Message, state: FSMContext, bot: Bot) -> None:
         )
     except Exception as e:
         print(f"Ошибка при обработке текста: {e}")
-        await status_msg.edit_text("Произошла ошибка при обработке текста. Попробуй ещё раз.")
+        await status_msg.edit_text("Произошла ошибка при обработке текста. Попробуй ещё раз")
         await state.clear()
 #endregion
 
@@ -742,7 +742,7 @@ async def on_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     result_data = data.get("result")
     if not result_data:
-        await callback.message.answer("Нечего подтверждать. Пришлите фото или текст заново.")
+        await callback.message.answer("Нечего подтверждать. Пришлите фото или текст заново")
         await state.clear()
         return
 
@@ -765,7 +765,7 @@ async def on_edit(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     data = await state.get_data()
     if not data.get("result"):
-        await callback.message.answer("Нечего менять. Пришлите фото или текст заново.")
+        await callback.message.answer("Нечего менять. Пришлите фото или текст заново")
         await state.clear()
         return
 
@@ -790,7 +790,7 @@ async def on_edit_weight(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     if not data.get("result"):
         await message.answer(
-            "Данные потеряны. Пришлите фото или описание заново.",
+            "Данные потеряны. Пришлите фото или описание заново",
             reply_markup=ReplyKeyboardRemove(),
         )
         await state.clear()
@@ -798,7 +798,7 @@ async def on_edit_weight(message: Message, state: FSMContext) -> None:
 
     await state.set_state(FoodFlow.waiting_weight)
     await message.answer(
-        "Введите вес порции в граммах (например: 150).",
+        "Введите вес порции в граммах (например: 150)",
         reply_markup=ReplyKeyboardRemove(),
     )
 
@@ -810,7 +810,7 @@ async def on_edit_hint(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     if not data.get("result") and not data.get("file_id"):
         await message.answer(
-            "Данные потеряны. Пришлите фото или описание заново.",
+            "Данные потеряны. Пришлите фото или описание заново",
             reply_markup=ReplyKeyboardRemove(),
         )
         await state.clear()
@@ -818,11 +818,11 @@ async def on_edit_hint(message: Message, state: FSMContext) -> None:
 
     await state.set_state(FoodFlow.waiting_hint)
     await message.answer(
-        "Дополните или уточните описание блюда текстом.",
+        "Дополните или уточните описание блюда текстом",
         reply_markup=ReplyKeyboardRemove(),
     )
     await message.answer(
-        "Если передумали — нажмите «Отмена».",
+        "Если передумали — нажмите «Отмена»",
         reply_markup=build_cancel_keyboard(),
     )
 
@@ -834,7 +834,7 @@ async def on_edit_replace(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         "Хорошо. Пришлите новое фото или текстовое описание — "
-        "распознаем заново.",
+        "распознаем заново",
         reply_markup=ReplyKeyboardRemove(),
     )
 
@@ -855,7 +855,7 @@ async def on_edit_discard(message: Message, state: FSMContext) -> None:
 @dp.message(FoodFlow.editing_choice, F.text)
 async def on_edit_choice_other(message: Message) -> None:
     await message.answer(
-        "Выберите один из пунктов на клавиатуре ниже.",
+        "Выберите один из пунктов на клавиатуре ниже",
         reply_markup=build_edit_menu_keyboard(),
     )
 #endregion
@@ -868,7 +868,7 @@ async def on_weight_button(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     data = await state.get_data()
     if not data.get("result"):
-        await callback.message.answer("Данные потеряны. Пришлите фото заново.")
+        await callback.message.answer("Данные потеряны. Пришлите фото заново")
         await state.clear()
         return
 
@@ -878,7 +878,7 @@ async def on_weight_button(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await callback.message.answer("Введите реальный вес продукта в граммах (например: 150).")
+    await callback.message.answer("Введите реальный вес продукта в граммах (например: 150)")
 
 
 # Callback «Отмена»: выход из waiting_hint без повторного запроса.
@@ -892,7 +892,7 @@ async def on_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     except Exception:
         pass
     await callback.message.answer(
-        "Отменено. Можете прислать новое фото или текстовое описание.",
+        "Отменено. Можете прислать новое фото или текстовое описание",
         reply_markup=ReplyKeyboardRemove(),
     )
 #endregion
