@@ -114,7 +114,9 @@ def format_food_analysis(analysis: FoodAnalysis) -> str:
 @dp.message(CommandStart())
 async def start(message: Message) -> None:
     await message.answer(
-        "2Привет! Я @nutrisnap_ultra_bot.\n"
+        "v0.1\n"
+        "\n"
+        "Привет! Я @nutrisnap_ultra_bot.\n"
         "Пришли фото блюда — оценю калорийность и БЖУ."
     )
 
@@ -176,9 +178,14 @@ async def main() -> None:
         )
 
     bot = Bot(token=BOT_TOKEN)
-    print("Бот @nutrisnap_ultra_bot запущен. Нажми Ctrl+C для остановки.", flush=True)
+    print("🟩 Бот @nutrisnap_ultra_bot запущен. Нажми Ctrl+C для остановки", flush=True)
     await dp.start_polling(bot)
 
 
+# Запуск: python main_1.py
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n🟧 Бот остановлен", flush=True)
