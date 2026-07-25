@@ -1,3 +1,8 @@
+"""
+Здесь можно протестировать бота в Тг
+"""
+
+
 import asyncio
 import os
 
@@ -21,7 +26,14 @@ dp = Dispatcher()
 def build_start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Написать 1", callback_data=CALLBACK_WRITE_ONE)],
+            # [
+            #     InlineKeyboardButton(text="Написать 1", callback_data=CALLBACK_WRITE_ONE),
+            #     InlineKeyboardButton(text="Написать 2", callback_data=CALLBACK_WRITE_ONE)
+            # ],
+            [
+                InlineKeyboardButton(text="✏️ Изменить", callback_data=CALLBACK_WRITE_ONE),
+                InlineKeyboardButton(text="✅ Подтвердить", callback_data=CALLBACK_WRITE_ONE)
+            ],
         ]
     )
 
@@ -31,8 +43,12 @@ def build_start_keyboard() -> InlineKeyboardMarkup:
 @dp.message(CommandStart())
 async def start(message: Message) -> None:
     await message.answer(
-        "Привет! Я @nutrisnap_ultra_bot.\n"
-        "Нажми кнопку ниже — я отвечу в чат.",
+        # "Привет! Я @nutrisnap_ultra_bot.\n"
+        # "Нажми кнопку ниже — я отвечу в чат.",
+        "123\n"
+        "012345678901234567890123456789\n" # 3 набора от 0 до 9
+        "123\n"
+        "123\n",
         reply_markup=build_start_keyboard(),
     )
 

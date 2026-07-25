@@ -35,6 +35,7 @@ NutriSnap_Twin_bot/
 - Превью (`format_food_result`): сразу под названием блюда — «Примерная порция: ~N г» (для этикетки — «Порция: N г»).
 - FSM: `confirming` | `editing_choice` | `waiting_hint` | `waiting_weight`.
 - Confirm UI: ✏️ / ✅ (+ ⚖️ для этикетки); авто ✅ через 10 с (`confirm_token`).
+- Превью с ✏️/✅ добивается до `MIN_CONFIRM_MSG_WIDTH=30` (`ensure_min_message_width`, NBSP) — иначе кнопки длиннее сообщения.
 - ✏️ → reply-меню (`editing_choice`): вес порции / дополнить описание / заменить ввод / не сохранять.
 - Этикетка без объёма → `portion_g = 100`; ⚖️ или «Изменить вес» → пропорциональный пересчёт КБЖУ.
 - «Сохранение»: `save_to_console` (print JSON). Дневник, БД, дневной лимит — не реализованы.

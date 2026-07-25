@@ -1,3 +1,7 @@
+"""
+Это тест распознавания еды на изображении - с локального файла img_1.jpg, через Gemini
+"""
+
 import json
 import os
 from dotenv import load_dotenv

@@ -43,6 +43,8 @@ main_2.py — основная точка входа Telegram-бота NutriSnap
    normalize_label_result — для этикетки без объёма подставляет 100 г.
    recalc_by_weight — пропорциональный пересчёт ккал/БЖУ на новый вес.
    format_food_result — человекочитаемое HTML-превью (блюдо, порция, КБЖУ).
+   ensure_min_message_width — добивает текст до MIN_CONFIRM_MSG_WIDTH, чтобы
+   пузырь Telegram не был уже ряда кнопок ✏️/✅.
 
 7. Клавиатуры
    Inline: подтверждение еды (✏️/✅), этикетки (+⚖️), отмена ожидания подсказки.
@@ -92,6 +94,7 @@ import asyncio
 import html
 import json
 import os
+import re
 import tempfile
 import uuid
 from pathlib import Path
@@ -130,6 +133,9 @@ CONFIRM_TIMEOUT_SEC = 10
 
 # Стандартная порция (г), если на этикетке не указан объём.
 DEFAULT_PORTION_G = 100.0
+
+# Мин. ширина превью (символов) с кнопками ✏️/✅ — иначе кнопки длиннее сообщения.
+MIN_CONFIRM_MSG_WIDTH = 30
 
 # Очередь моделей для попыток (fallback при ошибке/таймауте).
 MODELS_QUEUE = [
@@ -362,6 +368,24 @@ def format_food_result(result: FoodResult) -> str:
                 f"{portion:g} г"
             )
     return "\n".join(lines)
+
+
+# Добивает текст до min_width по самой длинной видимой строке (без HTML-тегов).
+# Telegram рисует ширину пузыря по max-строке; если она короче кнопок ✏️/✅ —
+# ряд выглядит шире сообщения. Паддинг — неразрывные пробелы в первой строке.
+# Используется в show_confirm_preview перед отправкой/редактированием превью.
+def ensure_min_message_width(
+    text: str, min_width: int = MIN_CONFIRM_MSG_WIDTH
+) -> str:
+    lines = text.split("\n")
+    if not lines:
+        return "\u00A0" * min_width
+    visible_lens = [len(re.sub(r"<[^>]+>", "", line)) for line in lines]
+    if max(visible_lens) >= min_width:
+        return text
+    pad = min_width - visible_lens[0]
+    lines[0] = lines[0] + ("\u00A0" * pad)
+    return "\n".join(lines)
 #endregion
 
 #region Клавиатуры
@@ -511,7 +535,7 @@ async def show_confirm_preview(
         keyboard = build_confirm_keyboard()
 
     token = uuid.uuid4().hex
-    text = format_food_result(result)
+    text = ensure_min_message_width(format_food_result(result))
     if edit_message is not None:
         preview = await edit_message.edit_text(
             text, reply_markup=keyboard, parse_mode="HTML"
