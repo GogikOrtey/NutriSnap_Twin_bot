@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import os
 import tempfile
@@ -56,7 +57,8 @@ PHOTO_PROMPT = """Ты анализируешь фото для учёта ка�
 
 Верни JSON строго по схеме. Выбери ровно один status:
 - recognized — на фото обычная еда, уверенно оцени dish + calories + БЖУ (proteins/fats/carbs).
-  portion_g — оценка веса порции в граммах (если возможно), portion_known=false, is_label=false.
+  portion_g — ВСЕГДА оцени примерный вес порции на фото в граммах (визуально).
+  portion_known=false, is_label=false.
 - unclear — на фото похоже на еду, но уверенности нет: dish/calories/БЖУ можно оставить null.
 - no_food — еды нет, или этикетка без читаемых данных о ккал.
 - label — на фото этикетка/состав с читаемыми ккал (и опционально КБЖУ).
@@ -65,7 +67,7 @@ PHOTO_PROMPT = """Ты анализируешь фото для учёта ка�
 - bad_desc — используй ТОЛЬКО если пользователь дал текстовую подсказку, и она явно
   противоречит фото / мешает классификации.
 
-Числа: calories — целое ккал; proteins/fats/carbs — граммы (float)."""
+Числа: calories — целое ккал; proteins/fats/carbs — граммы (float); portion_g — граммы (float)."""
 
 TEXT_PROMPT = """Пользователь описывает еду или калории текстом (без фото).
 
@@ -75,7 +77,10 @@ TEXT_PROMPT = """Пользователь описывает еду или ка�
 - status=bad_desc, если текст явно бессмысленный для учёта еды.
 - status=no_food / label не используй для чистого текста.
 
-Заполни calories (целое). dish и БЖУ — если возможно. is_label=false, portion_known=false."""
+Заполни calories (целое). dish и БЖУ — если возможно.
+portion_g — ВСЕГДА: если пользователь указал вес — используй его; иначе оцени
+типичную/среднюю порцию такого блюда в граммах.
+is_label=false, portion_known=false."""
 #endregion
 
 #region Схема ответа
@@ -104,7 +109,8 @@ class FoodResult(BaseModel):
     fats: float | None = Field(default=None, description="Жиры в граммах")
     carbs: float | None = Field(default=None, description="Углеводы в граммах")
     portion_g: float | None = Field(
-        default=None, description="Объём в граммах, на который даны ккал"
+        default=None,
+        description="Вес порции в граммах (оценка с фото / типичная порция / с этикетки)",
     )
     portion_known: bool = Field(
         default=False, description="True, если объём явно указан на этикетке"
@@ -217,11 +223,25 @@ def recalc_by_weight(result: FoodResult, weight_g: float) -> FoodResult:
     return FoodResult.model_validate(data)
 
 
-# Форматирует FoodResult в читаемый блок для пользователя (блюдо + КБЖУ + объём).
+# Форматирует FoodResult в читаемый блок для пользователя (блюдо + порция + КБЖУ).
+# HTML-разметка (<b>); вызывающий код должен слать с parse_mode="HTML".
 # Используется при показе превью перед подтверждением.
 def format_food_result(result: FoodResult) -> str:
-    dish = result.dish or "Блюдо"
-    lines = [f"🍽  {dish}", "", "📋 Пищевая ценность:"]
+    dish = html.escape(result.dish or "Блюдо")
+    lines = [f"🍽  {dish}"]
+
+    # Порция всегда сразу под названием: оценка с фото/типичная или с этикетки.
+    portion = result.portion_g
+    if result.is_label or result.status == "label":
+        portion = portion or DEFAULT_PORTION_G
+        if result.portion_known:
+            lines.append(f"Порция: <b>{portion:g} г</b>")
+        else:
+            lines.append(f"Порция: <b>{portion:g} г</b> (стандартная)")
+    elif portion is not None:
+        lines.append(f"Примерная порция: <b>~{portion:g} г</b>")
+
+    lines.extend(["", "📋 Пищевая ценность:"])
     if result.calories is not None:
         lines.append(f"• 🔥 Калорийность: {result.calories} ккал")
     if result.proteins is not None:
@@ -234,11 +254,11 @@ def format_food_result(result: FoodResult) -> str:
         portion = result.portion_g or DEFAULT_PORTION_G
         if result.portion_known:
             lines.append("")
-            lines.append(f"⚖️ Значения рассчитаны на {portion:g} г (как на этикетке).")
+            lines.append(f"Значения рассчитаны на {portion:g} г (как на этикетке).")
         else:
             lines.append("")
             lines.append(
-                f"⚖️ Объём на этикетке не указан — значения для стандартной порции "
+                f"Объём на этикетке не указан — значения для стандартной порции "
                 f"{portion:g} г."
             )
     return "\n".join(lines)
@@ -378,9 +398,13 @@ async def show_confirm_preview(
     token = uuid.uuid4().hex
     text = format_food_result(result)
     if edit_message is not None:
-        preview = await edit_message.edit_text(text, reply_markup=keyboard)
+        preview = await edit_message.edit_text(
+            text, reply_markup=keyboard, parse_mode="HTML"
+        )
     else:
-        preview = await message.answer(text, reply_markup=keyboard)
+        preview = await message.answer(
+            text, reply_markup=keyboard, parse_mode="HTML"
+        )
 
     await state.set_state(FoodFlow.confirming)
     await state.update_data(
@@ -593,7 +617,8 @@ async def on_weight_text(message: Message, state: FSMContext) -> None:
     save_to_console(updated)
     await state.clear()
     await message.answer(
-        f"{format_food_result(updated)}\n\nУчтено (с пересчётом на {weight:g} г)."
+        f"{format_food_result(updated)}\n\nУчтено (с пересчётом на {weight:g} г).",
+        parse_mode="HTML",
     )
 #endregion
 

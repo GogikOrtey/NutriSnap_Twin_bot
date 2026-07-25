@@ -31,6 +31,8 @@ NutriSnap_Twin_bot/
 - Схема `FoodResult`: `status`, `dish`, `calories`, `proteins`, `fats`, `carbs`, `portion_g`, `portion_known`, `is_label`.
 - Статусы ИИ: `recognized` | `unclear` | `no_food` | `label` | `bad_desc`.
 - Входы: фото / фото+caption / только текст (`analyze_food_photo`, `analyze_food_text`).
+- `portion_g` обязателен при `recognized`: с фото — оценка веса порции; с текста — указанный вес или типичная средняя порция блюда.
+- Превью (`format_food_result`): сразу под названием блюда — «Примерная порция: ~N г» (для этикетки — «Порция: N г»).
 - FSM: `confirming` | `waiting_hint` | `waiting_weight`.
 - Confirm UI: ✏️ / ✅ (+ ⚖️ для этикетки); авто ✅ через 10 с (`confirm_token`).
 - Этикетка без объёма → `portion_g = 100`; ⚖️ → пропорциональный пересчёт КБЖУ.
