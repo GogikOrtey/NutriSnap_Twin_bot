@@ -33,9 +33,10 @@ NutriSnap_Twin_bot/
 - Входы: фото / фото+caption / только текст (`analyze_food_photo`, `analyze_food_text`).
 - `portion_g` обязателен при `recognized`: с фото — оценка веса порции; с текста — указанный вес или типичная средняя порция блюда.
 - Превью (`format_food_result`): сразу под названием блюда — «Примерная порция: ~N г» (для этикетки — «Порция: N г»).
-- FSM: `confirming` | `waiting_hint` | `waiting_weight`.
+- FSM: `confirming` | `editing_choice` | `waiting_hint` | `waiting_weight`.
 - Confirm UI: ✏️ / ✅ (+ ⚖️ для этикетки); авто ✅ через 10 с (`confirm_token`).
-- Этикетка без объёма → `portion_g = 100`; ⚖️ → пропорциональный пересчёт КБЖУ.
+- ✏️ → reply-меню (`editing_choice`): вес порции / дополнить описание / заменить ввод / не сохранять.
+- Этикетка без объёма → `portion_g = 100`; ⚖️ или «Изменить вес» → пропорциональный пересчёт КБЖУ.
 - «Сохранение»: `save_to_console` (print JSON). Дневник, БД, дневной лимит — не реализованы.
 - Запуск: `python main_2.py` (останови предыдущий polling-процесс бота, если был).
 

@@ -17,7 +17,10 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
 )
 from dotenv import load_dotenv
 from google import genai
@@ -50,6 +53,12 @@ CALLBACK_CONFIRM = "food:confirm"
 CALLBACK_EDIT = "food:edit"
 CALLBACK_WEIGHT = "food:weight"
 CALLBACK_CANCEL = "food:cancel"
+
+# Тексты кнопок reply-клавиатуры меню «✏️ Изменить».
+BTN_EDIT_WEIGHT = "✏️ Изменить вес порции"
+BTN_EDIT_HINT = "➕ Дополнить или уточнить описание блюда"
+BTN_EDIT_REPLACE = "🔄 Заменить описание или фото"
+BTN_EDIT_DISCARD = "❌ Не сохранять этот результат"
 #endregion
 
 #region Промпты
@@ -89,10 +98,11 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 
-# FSM-состояния учёта еды: подтверждение, подсказка к фото, ввод точного веса.
+# FSM-состояния учёта еды: подтверждение, меню правок, подсказка, ввод веса.
 # Используется в хендлерах фото/текста/callback и таймере автоподтверждения.
 class FoodFlow(StatesGroup):
     confirming = State()
+    editing_choice = State()
     waiting_hint = State()
     waiting_weight = State()
 
@@ -303,6 +313,21 @@ def build_cancel_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Отмена", callback_data=CALLBACK_CANCEL)]
         ]
+    )
+
+
+# Reply-клавиатура меню правок после нажатия «✏️ Изменить».
+# Используется в on_edit → FoodFlow.editing_choice.
+def build_edit_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_EDIT_WEIGHT)],
+            [KeyboardButton(text=BTN_EDIT_HINT)],
+            [KeyboardButton(text=BTN_EDIT_REPLACE)],
+            [KeyboardButton(text=BTN_EDIT_DISCARD)],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
     )
 #endregion
 
@@ -547,9 +572,9 @@ async def on_photo(message: Message, state: FSMContext, bot: Bot) -> None:
             temp_path.unlink(missing_ok=True)
 #endregion
 
-#region Подсказка к фото
-# Текстовая подсказка к фото: повторный AI-запрос с тем же file_id.
-# Используется в состоянии FoodFlow.waiting_hint.
+#region Подсказка к фото / уточнение текста
+# Уточнение: повторный AI-запрос с тем же file_id или пересчёт по тексту.
+# Используется в состоянии FoodFlow.waiting_hint (unclear / меню «✏️ Изменить»).
 @dp.message(FoodFlow.waiting_hint, F.text)
 async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
     hint = (message.text or "").strip()
@@ -559,9 +584,41 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
 
     data = await state.get_data()
     file_id = data.get("file_id")
+
+    # Текстовый результат без фото: уточняем через analyze_food_text.
     if not file_id:
-        await message.answer("Фото для уточнения не найдено. Пришлите новое фото.")
-        await state.clear()
+        prev = data.get("result") or {}
+        prev_dish = (prev.get("dish") or "").strip()
+        query = (
+            f"Ранее распознано: {prev_dish}. Уточнение пользователя: {hint}"
+            if prev_dish
+            else hint
+        )
+        status_msg = await message.answer("Уточняю по вашей подсказке…")
+        try:
+            raw = await asyncio.to_thread(analyze_food_text, query)
+            result = parse_food_result(raw)
+            if result is None:
+                await status_msg.edit_text(
+                    "Не удалось уточнить результат. Попробуйте другое описание "
+                    "или пришлите фото."
+                )
+                return
+            if result.status == "label":
+                result = result.model_copy(
+                    update={"status": "recognized", "is_label": False}
+                )
+            await handle_ai_result(
+                message,
+                state,
+                bot,
+                result,
+                file_id=None,
+                status_message=status_msg,
+            )
+        except Exception as e:
+            print(f"Ошибка при уточнении текстового результата: {e}")
+            await status_msg.edit_text("Ошибка при уточнении. Попробуйте ещё раз.")
         return
 
     status_msg = await message.answer("Уточняю по вашей подсказке…")
@@ -619,6 +676,7 @@ async def on_weight_text(message: Message, state: FSMContext) -> None:
     await message.answer(
         f"{format_food_result(updated)}\n\nУчтено ✅ (с пересчётом на {weight:g} г).",
         parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove(),
     )
 #endregion
 
@@ -700,36 +758,107 @@ async def on_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.message.answer("Учтено ✅")
 
 
-# Callback ✏️: запрос текстовой подсказки (повтор с тем же фото, если есть).
+# Callback ✏️: показывает меню правок с reply-клавиатурой.
 # Регистрируется через декоратор dp.callback_query.
 @dp.callback_query(F.data == CALLBACK_EDIT)
 async def on_edit(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     data = await state.get_data()
-    file_id = data.get("file_id")
-    await state.update_data(confirm_token=None)
-
-    if not file_id:
+    if not data.get("result"):
+        await callback.message.answer("Нечего менять. Пришлите фото или текст заново.")
         await state.clear()
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
-        await callback.message.answer(
-            "Опишите текстом блюдо и порцию заново — или пришлите новое фото."
-        )
         return
 
-    await state.set_state(FoodFlow.waiting_hint)
+    await state.update_data(confirm_token=None)
+    await state.set_state(FoodFlow.editing_choice)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
     await callback.message.answer(
-        "Неверно распознано. Опишите текстом, что за еда на фото — "
-        "или нажмите «Отмена».",
+        "Что поправить в результате?\n"
+        "Выберите действие на клавиатуре ниже:",
+        reply_markup=build_edit_menu_keyboard(),
+    )
+
+
+#region Меню правок (reply-кнопки)
+# Пункт «✏️ Изменить вес порции»: переход к вводу граммов и пересчёту КБЖУ.
+# Используется в состоянии FoodFlow.editing_choice.
+@dp.message(FoodFlow.editing_choice, F.text == BTN_EDIT_WEIGHT)
+async def on_edit_weight(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    if not data.get("result"):
+        await message.answer(
+            "Данные потеряны. Пришлите фото или описание заново.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await state.clear()
+        return
+
+    await state.set_state(FoodFlow.waiting_weight)
+    await message.answer(
+        "Введите вес порции в граммах (например: 150).",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+# Пункт «➕ Дополнить…»: запрос уточнения (к фото или к текстовому результату).
+# Используется в состоянии FoodFlow.editing_choice.
+@dp.message(FoodFlow.editing_choice, F.text == BTN_EDIT_HINT)
+async def on_edit_hint(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    if not data.get("result") and not data.get("file_id"):
+        await message.answer(
+            "Данные потеряны. Пришлите фото или описание заново.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await state.clear()
+        return
+
+    await state.set_state(FoodFlow.waiting_hint)
+    await message.answer(
+        "Дополните или уточните описание блюда текстом.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await message.answer(
+        "Если передумали — нажмите «Отмена».",
         reply_markup=build_cancel_keyboard(),
     )
+
+
+# Пункт «🔄 Заменить…»: сброс флоу и ожидание нового фото/текста.
+# Используется в состоянии FoodFlow.editing_choice.
+@dp.message(FoodFlow.editing_choice, F.text == BTN_EDIT_REPLACE)
+async def on_edit_replace(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "Хорошо. Пришлите новое фото или текстовое описание — "
+        "распознаем заново.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+# Пункт «❌ Не сохранять»: выход без записи результата в дневник.
+# Используется в состоянии FoodFlow.editing_choice.
+@dp.message(FoodFlow.editing_choice, F.text == BTN_EDIT_DISCARD)
+async def on_edit_discard(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "Хорошо, результат не сохранён в дневник",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+# Любой другой текст в меню правок — напоминание выбрать кнопку.
+# Используется в состоянии FoodFlow.editing_choice.
+@dp.message(FoodFlow.editing_choice, F.text)
+async def on_edit_choice_other(message: Message) -> None:
+    await message.answer(
+        "Выберите один из пунктов на клавиатуре ниже.",
+        reply_markup=build_edit_menu_keyboard(),
+    )
+#endregion
 
 
 # Callback ⚖️: переход к вводу точного веса продукта.
@@ -762,7 +891,10 @@ async def on_cancel(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await callback.message.answer("Отменено. Можете прислать новое фото или текстовое описание.")
+    await callback.message.answer(
+        "Отменено. Можете прислать новое фото или текстовое описание.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
 #endregion
 
 #region Запуск
