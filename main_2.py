@@ -375,7 +375,7 @@ async def schedule_auto_confirm(
         )
     except Exception:
         pass
-    await bot.send_message(chat_id, "Учтено ✅ (автоподтверждение по таймауту)")
+    await bot.send_message(chat_id, "Учтено ✅")
 
 
 # Показывает превью КБЖУ, ставит FSM confirming и запускает таймер 10с.
