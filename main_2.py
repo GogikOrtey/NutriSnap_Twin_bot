@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from google import genai
 from pydantic import BaseModel, Field
 
+#region Конфиг
 load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_API_KEY")
@@ -48,7 +49,9 @@ CALLBACK_CONFIRM = "food:confirm"
 CALLBACK_EDIT = "food:edit"
 CALLBACK_WEIGHT = "food:weight"
 CALLBACK_CANCEL = "food:cancel"
+#endregion
 
+#region Промпты
 PHOTO_PROMPT = """Ты анализируешь фото для учёта калорий.
 
 Верни JSON строго по схеме. Выбери ровно один status:
@@ -73,7 +76,9 @@ TEXT_PROMPT = """Пользователь описывает еду или ка�
 - status=no_food / label не используй для чистого текста.
 
 Заполни calories (целое). dish и БЖУ — если возможно. is_label=false, portion_known=false."""
+#endregion
 
+#region Схема ответа
 client = genai.Client(api_key=GEMINI_API_KEY)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
@@ -105,8 +110,9 @@ class FoodResult(BaseModel):
         default=False, description="True, если объём явно указан на этикетке"
     )
     is_label: bool = Field(default=False, description="True, если это этикетка/состав")
+#endregion
 
-
+#region Анализ ч/з Gemini
 # Общий вызов Gemini с JSON-схемой и fallback по MODELS_QUEUE.
 # Используется в analyze_food_photo и analyze_food_text.
 def _generate_with_fallback(contents: list[Any]) -> str | None:
@@ -179,8 +185,9 @@ def analyze_food_text(text: str) -> str | None:
         TEXT_PROMPT,
     ]
     return _generate_with_fallback(contents)
+#endregion
 
-
+#region Результат
 # Нормализует результат этикетки: подставляет DEFAULT_PORTION_G, если объём неизвестен.
 # Используется перед показом confirm UI для status=label.
 def normalize_label_result(result: FoodResult) -> FoodResult:
@@ -235,8 +242,9 @@ def format_food_result(result: FoodResult) -> str:
                 f"{portion:g} г."
             )
     return "\n".join(lines)
+#endregion
 
-
+#region Клавиатуры
 # Клавиатура подтверждения обычной еды: ✏️ / ✅.
 # Используется в show_confirm_preview для recognized / текстовой ветки.
 def build_confirm_keyboard() -> InlineKeyboardMarkup:
@@ -276,8 +284,9 @@ def build_cancel_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Отмена", callback_data=CALLBACK_CANCEL)]
         ]
     )
+#endregion
 
-
+#region Утилиты
 # Печатает итоговый JSON результата в консоль (заглушка вместо дневника/БД).
 # Используется при ✅ / автотаймауте / после пересчёта веса.
 def save_to_console(result: FoodResult) -> None:
@@ -309,8 +318,9 @@ def parse_food_result(raw: str | None) -> FoodResult | None:
     except Exception as e:
         print(f"Не удалось разобрать ответ модели: {e}")
         return None
+#endregion
 
-
+#region Confirm UI
 # Запускает таймер автоподтверждения; срабатывает только если confirm_token актуален.
 # Используется сразу после показа превью с кнопками.
 async def schedule_auto_confirm(
@@ -457,8 +467,9 @@ async def handle_ai_result(
     else:
         await message.answer(text)
     await state.clear()
+#endregion
 
-
+#region Стартовое сообщение
 # Обработчик /start: кратко объясняет, как учитывать еду (фото или текст).
 # Регистрируется через декоратор dp.message(CommandStart()).
 @dp.message(CommandStart())
@@ -471,8 +482,9 @@ async def start(message: Message, state: FSMContext) -> None:
         "Пришли фото блюда (можно с подписью) или напиши текстом, "
         "что съел / сколько ккал — оценю калорийность и БЖУ."
     )
+#endregion
 
-
+#region Обработчик фото
 # Обработчик фото: анализ через Gemini, ветки status, confirm UI.
 # Регистрируется через декоратор dp.message(F.photo).
 @dp.message(F.photo)
@@ -509,8 +521,9 @@ async def on_photo(message: Message, state: FSMContext, bot: Bot) -> None:
     finally:
         if temp_path is not None and temp_path.exists():
             temp_path.unlink(missing_ok=True)
+#endregion
 
-
+#region Подсказка к фото
 # Текстовая подсказка к фото: повторный AI-запрос с тем же file_id.
 # Используется в состоянии FoodFlow.waiting_hint.
 @dp.message(FoodFlow.waiting_hint, F.text)
@@ -552,8 +565,9 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
     finally:
         if temp_path is not None and temp_path.exists():
             temp_path.unlink(missing_ok=True)
+#endregion
 
-
+#region Ввод веса
 # Ввод точного веса (г) после ⚖️: пересчёт КБЖУ и «сохранение» в консоль.
 # Используется в состоянии FoodFlow.waiting_weight.
 @dp.message(FoodFlow.waiting_weight, F.text)
@@ -581,8 +595,9 @@ async def on_weight_text(message: Message, state: FSMContext) -> None:
     await message.answer(
         f"{format_food_result(updated)}\n\nУчтено (с пересчётом на {weight:g} г)."
     )
+#endregion
 
-
+#region Обработчик текста
 # Текстовая ветка учёта: отправка текста в нейронку → confirm UI.
 # Не срабатывает в waiting_hint / waiting_weight (отдельные хендлеры выше).
 @dp.message(StateFilter(None, FoodFlow.confirming), F.text)
@@ -633,8 +648,9 @@ async def on_text_food(message: Message, state: FSMContext, bot: Bot) -> None:
         print(f"Ошибка при обработке текста: {e}")
         await status_msg.edit_text("Произошла ошибка при обработке текста. Попробуй ещё раз.")
         await state.clear()
+#endregion
 
-
+#region Callbacks
 # Callback ✅: сохраняет JSON в консоль и завершает флоу.
 # Регистрируется через декоратор dp.callback_query.
 @dp.callback_query(F.data == CALLBACK_CONFIRM)
@@ -722,8 +738,9 @@ async def on_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     except Exception:
         pass
     await callback.message.answer("Отменено. Можете прислать новое фото или текстовое описание.")
+#endregion
 
-
+#region Запуск
 # Точка входа: проверяет ключи и поднимает long-polling бота с MemoryStorage.
 async def main() -> None:
     if not BOT_TOKEN:
@@ -746,3 +763,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n🟧 Бот остановлен", flush=True)
+#endregion
