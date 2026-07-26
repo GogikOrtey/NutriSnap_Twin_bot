@@ -712,15 +712,23 @@ async def on_timezone_city(message: Message, state: FSMContext) -> None:
     if len(city) > 100:
         await message.answer("Слишком длинное название — до 100 символов")
         return
-    await message.answer("Ищем город…")
+    searching = await message.answer("Ищем город…")
     tz_name = await resolve_timezone_from_city_async(city)
     if not tz_name:
         await state.set_state(SurveyFlow.timezone)
+        try:
+            await searching.delete()
+        except Exception:
+            pass
         await message.answer(
             "Не нашли такой город — попробуйте ещё раз или выберите кнопку",
             reply_markup=kb_timezone(),
         )
         return
+    try:
+        await searching.edit_text("Часовой пояс установлен ✅")
+    except Exception:
+        await message.answer("Часовой пояс установлен ✅")
     await proceed_to_calories_step(message, state, tz_name)
 
 
