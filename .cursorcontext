@@ -1,68 +1,173 @@
 # NutriSnap Twin Bot — контекст проекта
 
-Telegram-бот для учёта калорий по фото/тексту (NutriSnap). Актуальная точка входа: `main_2.py` (FSM-флоу). Прототип v0.1: `main_1.py` (только фото → КБЖУ без confirm).
+
+
+Telegram-бот для учёта калорий по фото/тексту (NutriSnap). Актуальная точка входа: `main.py`. Распознавание еды — в `food_recognition.py`.
+
+
 
 ## Назначение
 
+
+
 Пользователь присылает фото блюда (опционально с подписью) или текст → Gemini возвращает структурированный JSON со `status` → бот ведёт по веткам (unclear / no_food / label / recognized) → превью с кнопками и автоподтверждением → итог печатается в консоль (заглушка дневника).
+
+
 
 ## Структура
 
-```
-NutriSnap_Twin_bot/
-├── main_2.py          # Актуальная точка входа: полный флоу учёта еды (сверху файла — полное краткое описание)
-├── main_1.py          # v0.1: фото → Gemini → текст КБЖУ (без FSM)
-├── test_3_local.py    # Локальный прототип анализа фото (без Telegram)
-├── test_4_tg_bot.py   # Минимальный каркас бота (/start + кнопка)
-├── img_1.jpg          # Тестовое фото для локального запуска
-├── .env               # Секреты (не в git)
-├── .env.example       # Шаблон переменных окружения
-├── .gitignore
-├── backlog.md         # Личный бэклог (не править агентом)
-└── Старое/            # Устаревшие эксперименты (не использовать как основу)
+
+
 ```
 
-## Актуальная логика (`main_2.py`)
+NutriSnap_Twin_bot/
+
+├── main.py                # Точка входа: запуск бота, /start, подключение роутеров
+
+├── food_recognition.py    # FSM-флоу распознавания еды (Gemini + confirm UI)
+
+├── test_3_local.py        # Локальный прототип анализа фото (без Telegram)
+
+├── test_4_tg_bot.py       # Минимальный каркас бота (/start + кнопка)
+
+├── img_1.jpg              # Тестовое фото для локального запуска
+
+├── .env                   # Секреты (не в git)
+
+├── .env.example           # Шаблон переменных окружения
+
+├── .gitignore
+
+├── backlog.md             # Личный бэклог (не править агентом)
+
+└── Старое/                # Устаревшие эксперименты (не использовать как основу)
+
+```
+
+
+
+## Связь модулей
+
+
+
+```
+
+main.py
+
+  ├── Bot + Dispatcher + MemoryStorage
+
+  ├── /start
+
+  └── include_router(setup_food_recognition(storage))
+
+        └── food_recognition.py (Router: фото/текст/callbacks/FSM)
+
+```
+
+
+
+## Актуальная логика
+
+
+
+### `main.py`
 
 - Библиотека: `aiogram` 3.x + `MemoryStorage` (FSM), long polling.
-- SDK: `google.genai`, ключ `GEMINI_API_KEY`; токен бота `TELEGRAM_BOT_API_KEY`.
+
+- Проверка `TELEGRAM_BOT_API_KEY` / `GEMINI_API_KEY`, старт polling.
+
+- `/start` — приветствие; сюда же позже — главное меню.
+
+
+
+### `food_recognition.py`
+
+- SDK: `google.genai`, ключ `GEMINI_API_KEY`.
+
 - Очередь моделей (`MODELS_QUEUE`, таймаут 10 с, retries SDK = 1):  
-  `gemini-3.5-flash` → `gemini-flash-latest` → `gemini-3.1-flash-lite` → `gemini-2.5-flash`.
+
+  `gemini-flash-latest` → `gemini-3.5-flash` → `gemini-3.1-flash-lite` → `gemini-2.5-flash`.
+
 - Схема `FoodResult`: `status`, `dish`, `calories`, `proteins`, `fats`, `carbs`, `portion_g`, `portion_known`, `is_label`.
+
 - Статусы ИИ: `recognized` | `unclear` | `no_food` | `label` | `bad_desc`.
+
 - Входы: фото / фото+caption / только текст (`analyze_food_photo`, `analyze_food_text`).
+
 - `portion_g` обязателен при `recognized`: с фото — оценка веса порции; с текста — указанный вес или типичная средняя порция блюда.
+
 - Превью (`format_food_result`): сразу под названием блюда — «Примерная порция: ~N г» (для этикетки — «Порция: N г»).
+
 - FSM: `confirming` | `editing_choice` | `waiting_hint` | `waiting_weight`.
+
 - Confirm UI: ✏️ / ✅ (+ ⚖️ для этикетки); авто ✅ через 10 с (`confirm_token`).
+
 - Превью с ✏️/✅ добивается до `MIN_CONFIRM_MSG_WIDTH=30` (`WIDTH_PAD_CHAR=⠀`); после ✅/`finalize_confirmed_preview` — обычная ширина без паддинга.
+
 - ✏️ → reply-меню (`editing_choice`): вес порции / дополнить описание / заменить ввод / не сохранять.
+
 - Этикетка без объёма → `portion_g = 100`; ⚖️ или «Изменить вес» → пропорциональный пересчёт КБЖУ.
+
 - «Сохранение»: `save_to_console` (print JSON). Дневник, БД, дневной лимит — не реализованы.
-- Запуск: `python main_2.py` (останови предыдущий polling-процесс бота, если был).
+
+- Подключение: `setup_food_recognition(storage)` → `Router` для `dp.include_router`.
+
+
+
+Запуск: `python main.py` (останови предыдущий polling-процесс бота, если был).
+
+
 
 ## Переменные окружения
 
+
+
 | Переменная | Назначение |
+
 |---|---|
+
 | `GEMINI_API_KEY` | Ключ Google AI Studio / Gemini |
+
 | `TELEGRAM_BOT_API_KEY` | Токен бота @nutrisnap_ultra_bot (BotFather) |
+
+
 
 ## Зависимости (по коду)
 
+
+
 - `python-dotenv`, `google-genai`, `pydantic`, `aiogram`
+
+
 
 Отдельного `requirements.txt` в корне пока нет.
 
+
+
 ## Планируемое развитие
 
+
+
+- Главное меню в `main.py`.
+
 - Дневник питания / БД вместо печати JSON в консоль.
+
 - Дневной лимит распознаваний (на ветке «Неверно» → подсказка).
+
 - Сводка дня (ккал/БЖУ) — см. mock в `backlog.md`.
+
+
 
 ## Важные договорённости
 
-- Для функций — краткий комментарий-аннотация: зачем, что делает, где используется.
-- В `main_2.py` сверху файла есть полное краткое описание (модульный docstring): содержание, структура блоков по порядку кода, обработчики и логика. При любых изменениях в файле — обновлять это описание, чтобы оно оставалось актуальным.
+
+
+- Для функций — краткий комментарий-аннотация: зачем, что делает и где используется.
+
+- В `main.py` и `food_recognition.py` сверху файла — модульный docstring; при изменениях обновлять.
+
 - Не опираться на код в `Старое/` при новых изменениях.
+
 - Секреты только в `.env`.
+
+
