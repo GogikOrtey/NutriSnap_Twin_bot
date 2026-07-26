@@ -59,6 +59,8 @@ BTN_SETTINGS = "⚙️ Настройки"
 BTN_ADD_DISH = "➕ Добавить блюдо"
 BTN_EDIT_DISH = "✏️ Изменить блюдо"
 BTN_DELETE_DISH = "🗑 Удалить блюдо"
+# Устарело: раньше вело к выгрузке из дневника; оставлено в MENU_BUTTON_TEXTS
+# на случай старой reply-клавиатуры у клиента (не слать в Gemini).
 BTN_EXTRA = "📎 Дополнительно"
 BTN_BACK = "⬅️ Назад"
 
@@ -74,8 +76,12 @@ BTN_MONTH_60_90 = "3️⃣ От 60 до 90 дней назад"
 BTN_SET_DAY_HOUR = "🕓 Время смены суток"
 BTN_SET_EXPORT = "📤 Сделать выгрузку журнала"
 BTN_SET_FEEDBACK = "💬 Отправить отзыв"
-BTN_SET_GOAL = "🎯 Тип отслеживания"
+BTN_SET_PROFILE = "👤 Изменить данные профиля"
+BTN_UPDATE_PROFILE = "🔄 Обновить данные пользователя"
+BTN_SET_GOAL = "🎯 Изменить тип отслеживания"
 BTN_SET_CALORIES = "🔥 Целевые ккал в сутки"
+BTN_CONFIRM_UPDATE_YES = "✅ Да, запустить опрос"
+BTN_CONFIRM_UPDATE_NO = "❌ Нет, отмена"
 
 BTN_GOAL_LOSS = "📉 Похудение"
 BTN_GOAL_GAIN = "📈 Набор веса"
@@ -93,6 +99,14 @@ GOAL_BY_BTN = {
     BTN_GOAL_LOSS: "weight_loss",
     BTN_GOAL_GAIN: "muscle_gain",
     BTN_GOAL_MAINTAIN: "maintain",
+}
+# Подписи коэффициента активности (users.activity_level) для сводки профиля.
+ACTIVITY_LABELS = {
+    1.2: "Сидячий образ жизни",
+    1.375: "Лёгкая активность",
+    1.55: "Умеренная активность",
+    1.725: "Высокая активность",
+    1.9: "Очень высокая активность",
 }
 
 # Все тексты Reply-кнопок меню — food_recognition не должен слать их в Gemini.
@@ -117,8 +131,12 @@ MENU_BUTTON_TEXTS: frozenset[str] = frozenset(
         BTN_SET_DAY_HOUR,
         BTN_SET_EXPORT,
         BTN_SET_FEEDBACK,
+        BTN_SET_PROFILE,
+        BTN_UPDATE_PROFILE,
         BTN_SET_GOAL,
         BTN_SET_CALORIES,
+        BTN_CONFIRM_UPDATE_YES,
+        BTN_CONFIRM_UPDATE_NO,
         BTN_GOAL_LOSS,
         BTN_GOAL_GAIN,
         BTN_GOAL_MAINTAIN,
@@ -369,6 +387,34 @@ def goal_label(goal: str) -> str:
     return GOAL_LABELS.get(goal, goal)
 
 
+# Человекочитаемая подпись уровня активности по коэффициенту.
+# Используется сводкой профиля в «Изменить данные профиля».
+def activity_label(level: float | int | None) -> str:
+    if level is None:
+        return "—"
+    try:
+        key = float(level)
+    except (TypeError, ValueError):
+        return str(level)
+    return ACTIVITY_LABELS.get(key, str(level))
+
+
+# Сводка характеристик профиля (имя, пол, рост, вес и т.д.).
+# Используется экраном «Изменить данные профиля».
+def format_profile_summary(user: dict[str, Any]) -> str:
+    gender = "М" if user.get("gender") == "male" else "Ж"
+    return (
+        f"Имя: {user.get('first_name', '—')}\n"
+        f"Пол: {gender}\n"
+        f"Возраст: {user.get('age', '—')}\n"
+        f"Рост: {user.get('height', '—')} см\n"
+        f"Вес: {user.get('weight', '—')} кг\n"
+        f"Активность: {activity_label(user.get('activity_level'))}\n"
+        f"Тип отслеживания: {goal_label(user.get('goal', ''))}\n"
+        f"Норма: {user.get('daily_calories', '—')} ккал/сутки"
+    )
+
+
 # Содержимое .txt выгрузки: промпт-шапка + строки дневника.
 # Используется хендлерами периодов выгрузки.
 def build_export_txt(
@@ -419,7 +465,6 @@ def kb_diary() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=BTN_ADD_DISH)],
             [KeyboardButton(text=BTN_EDIT_DISH), KeyboardButton(text=BTN_DELETE_DISH)],
-            [KeyboardButton(text=BTN_EXTRA)],
             [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
         ],
         resize_keyboard=True,
@@ -455,11 +500,11 @@ def kb_export_month() -> ReplyKeyboardMarkup:
     )
 
 
-# Reply-клавиатура экрана «Распознать».
+# Reply-клавиатура экрана «Распознать» (возврат в корень через «Назад»).
 # Используется show_recognize.
 def kb_recognize() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=BTN_MAIN_MENU)]],
+        keyboard=[[KeyboardButton(text=BTN_BACK)]],
         resize_keyboard=True,
     )
 
@@ -469,11 +514,37 @@ def kb_recognize() -> ReplyKeyboardMarkup:
 def kb_settings() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
+            [KeyboardButton(text=BTN_SET_PROFILE)],
             [KeyboardButton(text=BTN_SET_DAY_HOUR)],
             [KeyboardButton(text=BTN_SET_EXPORT)],
-            [KeyboardButton(text=BTN_SET_FEEDBACK)],
+            [KeyboardButton(text=BTN_SET_FEEDBACK)],            
+            [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# Reply-клавиатура «Изменить данные профиля» (опрос / цель / ккал).
+# Используется show_profile и возвратами из подпунктов профиля.
+def kb_profile() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_UPDATE_PROFILE)],
             [KeyboardButton(text=BTN_SET_GOAL)],
             [KeyboardButton(text=BTN_SET_CALORIES)],
+            [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# Reply-клавиатура подтверждения перезапуска первоначального опроса.
+# Используется флоу BTN_UPDATE_PROFILE.
+def kb_confirm_update_profile() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_CONFIRM_UPDATE_YES)],
+            [KeyboardButton(text=BTN_CONFIRM_UPDATE_NO)],
             [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
         ],
         resize_keyboard=True,
@@ -738,8 +809,25 @@ async def show_settings(message: Message, state: FSMContext) -> None:
     await replace_ui(message, state, text, reply_markup=kb_settings())
 
 
+# Экран «Изменить данные профиля»: сводка + кнопки опроса/цели/ккал.
+# Используется пунктом настроек и возвратами из подпунктов профиля.
+async def show_profile(message: Message, state: FSMContext) -> None:
+    await state.set_state(None)
+    await state.update_data(menu_screen="profile")
+    user_id = message.from_user.id if message.from_user else 0
+    user = stub_get_user(user_id)
+    text = (
+        "👤 Данные профиля\n"
+        "\n"
+        f"{format_profile_summary(user)}\n"
+        "\n"
+        "Выберите, что изменить:"
+    )
+    await replace_ui(message, state, text, reply_markup=kb_profile())
+
+
 # Подменю выбора периода выгрузки.
-# Используется «Дополнительно» и «Сделать выгрузку журнала».
+# Используется настройкой «Сделать выгрузку журнала».
 async def show_export_menu(message: Message, state: FSMContext) -> None:
     await state.set_state(None)
     await state.update_data(menu_screen="export")
@@ -850,9 +938,13 @@ async def on_back(message: Message, state: FSMContext) -> None:
         await show_diary(message, state)
         return
     if current in (
-        MenuFlow.settings_day_hour.state,
         MenuFlow.settings_calories.state,
         MenuFlow.settings_goal.state,
+    ):
+        await show_profile(message, state)
+        return
+    if current in (
+        MenuFlow.settings_day_hour.state,
         MenuFlow.feedback_wait.state,
     ):
         await show_settings(message, state)
@@ -867,6 +959,12 @@ async def on_back(message: Message, state: FSMContext) -> None:
             await show_diary(message, state)
         else:
             await show_main_menu(message, state)
+        return
+    if screen == "profile_confirm":
+        await show_profile(message, state)
+        return
+    if screen == "profile":
+        await show_settings(message, state)
         return
     await show_main_menu(message, state)
 #endregion
@@ -1033,11 +1131,6 @@ async def on_delete_dish_pick(message: Message, state: FSMContext) -> None:
     await show_diary(message, state)
 
 
-# «Дополнительно» → меню выгрузки.
-@menu_router.message(F.text == BTN_EXTRA)
-async def on_extra(message: Message, state: FSMContext) -> None:
-    await state.update_data(menu_screen="export", export_return="diary")
-    await show_export_menu(message, state)
 #endregion
 
 #region Хендлеры: выгрузка
@@ -1133,6 +1226,56 @@ async def on_export_month_pick(message: Message, state: FSMContext) -> None:
 #endregion
 
 #region Хендлеры: настройки
+# Открыть экран данных профиля (сводка + цель/ккал/опрос).
+@menu_router.message(F.text == BTN_SET_PROFILE)
+async def on_set_profile(message: Message, state: FSMContext) -> None:
+    await show_profile(message, state)
+
+
+# Предупреждение перед перезапуском первоначального опроса.
+@menu_router.message(F.text == BTN_UPDATE_PROFILE)
+async def on_update_profile_ask(message: Message, state: FSMContext) -> None:
+    await state.set_state(None)
+    await state.update_data(menu_screen="profile_confirm")
+    await replace_ui(
+        message,
+        state,
+        "🔄 Обновить данные пользователя\n"
+        "\n"
+        "Эта кнопка запустит заново первоначальный опрос. "
+        "В нём вы сможете поменять рост, вес, пол и другие характеристики, "
+        "если они изменились.\n"
+        "\n"
+        "После прохождения опроса мы автоматически рассчитаем новые значения "
+        "ккал на сутки.\n"
+        "\n"
+        "Продолжить?",
+        reply_markup=kb_confirm_update_profile(),
+    )
+
+
+# Согласие на перезапуск опроса → заглушка (онбординг подключим позже).
+@menu_router.message(F.text == BTN_CONFIRM_UPDATE_YES)
+async def on_update_profile_yes(message: Message, state: FSMContext) -> None:
+    await state.set_state(None)
+    await state.update_data(menu_screen="profile")
+    await replace_ui(
+        message,
+        state,
+        "🔜 Перекидываем вас на первоначальный опрос…\n"
+        "\n"
+        "Заглушка: сам опрос подключим позже. "
+        "Сейчас вы остаётесь в разделе данных профиля.",
+        reply_markup=kb_profile(),
+    )
+
+
+# Отказ от перезапуска опроса → назад к сводке профиля.
+@menu_router.message(F.text == BTN_CONFIRM_UPDATE_NO)
+async def on_update_profile_no(message: Message, state: FSMContext) -> None:
+    await show_profile(message, state)
+
+
 # Смена часа перехода суток — запрос ввода.
 @menu_router.message(F.text == BTN_SET_DAY_HOUR)
 async def on_set_day_hour(message: Message, state: FSMContext) -> None:
@@ -1144,6 +1287,10 @@ async def on_set_day_hour(message: Message, state: FSMContext) -> None:
         message,
         state,
         "🕓 Время смены суток\n"
+        "\n"
+        "В боте новый день начинается не в 00:00, а в выбранный час. "
+        "Всё, что вы съели до этого времени, относится к предыдущему дню "
+        "(удобно, если ужинаете или перекусываете после полуночи).\n"
         "\n"
         f"Сейчас: {user['day_change_hour']:02d}:00 "
         f"(часовой пояс {user['timezone']}).\n"
@@ -1224,11 +1371,11 @@ async def on_feedback_photo(message: Message, state: FSMContext) -> None:
     )
 
 
-# Выбор типа отслеживания — показать кнопки целей.
+# Выбор типа отслеживания — показать кнопки целей (из экрана профиля).
 @menu_router.message(F.text == BTN_SET_GOAL)
 async def on_set_goal(message: Message, state: FSMContext) -> None:
     await state.set_state(MenuFlow.settings_goal)
-    await state.update_data(menu_screen="goal")
+    await state.update_data(menu_screen="profile")
     await replace_ui(
         message,
         state,
@@ -1237,29 +1384,22 @@ async def on_set_goal(message: Message, state: FSMContext) -> None:
     )
 
 
-# Сохранение goal (🔰).
+# Сохранение goal (🔰) → обновлённая сводка профиля.
 @menu_router.message(MenuFlow.settings_goal, F.text.in_(set(GOAL_BY_BTN)))
 async def on_set_goal_value(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
     goal = GOAL_BY_BTN[message.text or ""]
     stub_set_goal(user_id, goal)
-    await state.set_state(None)
-    await state.update_data(menu_screen="settings")
-    await replace_ui(
-        message,
-        state,
-        f"✅ Цель: {goal_label(goal)} (🔰 stub).",
-        reply_markup=kb_settings(),
-    )
+    await show_profile(message, state)
 
 
-# Запрос целевых ккал.
+# Запрос целевых ккал (из экрана профиля).
 @menu_router.message(F.text == BTN_SET_CALORIES)
 async def on_set_calories(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
     user = stub_get_user(user_id)
     await state.set_state(MenuFlow.settings_calories)
-    await state.update_data(menu_screen="settings")
+    await state.update_data(menu_screen="profile")
     await replace_ui(
         message,
         state,
@@ -1267,11 +1407,11 @@ async def on_set_calories(message: Message, state: FSMContext) -> None:
         "\n"
         f"Сейчас: {user['daily_calories']} ккал.\n"
         "Введите новое целое число (например, 2000).",
-        reply_markup=kb_settings(),
+        reply_markup=kb_profile(),
     )
 
 
-# Сохранение daily_calories (🔰).
+# Сохранение daily_calories (🔰) → обновлённая сводка профиля.
 @menu_router.message(MenuFlow.settings_calories, F.text, ~F.text.in_(MENU_BUTTON_TEXTS))
 async def on_set_calories_value(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
@@ -1280,13 +1420,7 @@ async def on_set_calories_value(message: Message, state: FSMContext) -> None:
         return
     user_id = message.from_user.id if message.from_user else 0
     stub_set_daily_calories(user_id, int(text))
-    await state.set_state(None)
-    await replace_ui(
-        message,
-        state,
-        f"✅ Норма: {int(text)} ккал/сутки (🔰 stub).",
-        reply_markup=kb_settings(),
-    )
+    await show_profile(message, state)
 #endregion
 
 #region Запуск
