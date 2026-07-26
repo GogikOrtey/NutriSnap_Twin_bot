@@ -6,6 +6,7 @@ main.py — точка входа Telegram-бота NutriSnap (@nutrisnap_ultra_
 Запуск бота (long polling), инфраструктура (Bot, Dispatcher, MemoryStorage),
 главное меню (дневник, распознать, настройки, напоминания, выгрузка) и /start.
 Распознавание еды — в food_recognition.py (отдельный Router).
+Первичный опрос — в initial_survey.py (флаг INITIAL_SURVEY_ENABLED).
 
 Как устроен файл
 ----------------
@@ -13,7 +14,7 @@ main.py — точка входа Telegram-бота NutriSnap (@nutrisnap_ultra_
 2. Stub-хранилище и 🔰-хелперы (заглушки вместо SQL: users / food_logs / reminders).
 3. Форматтеры экранов и Reply/Inline-клавиатуры.
 4. UI-хелперы: Reply → новое сообщение; Inline дневника → edit; чистка «Выберите действие:».
-5. Router меню + хендлеры; /start открывает главное меню; on_food_saved → reminders.
+5. Router меню + хендлеры; /start → опрос (если флаг) или главное меню; on_food_saved → reminders.
 6. main() — старт polling.
 """
 
@@ -44,12 +45,17 @@ from aiogram.types import (
 from dotenv import load_dotenv
 
 from food_recognition import setup_food_recognition
+from initial_survey import setup_initial_survey, start_initial_survey
 
 #region Конфиг и тексты кнопок
 load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Если True — /start всегда кидает на первичный опрос (для разработки UI опроса).
+# Позже: выключить и проверять в БД, прошёл ли пользователь опрос при первом запуске.
+INITIAL_SURVEY_ENABLED = True
 
 # Кнопка возврата в корень — есть в основных разделах.
 BTN_MAIN_MENU = "🏠 Главное меню"
@@ -1468,6 +1474,7 @@ async def _on_food_saved(
 
 
 dp.include_router(menu_router)
+dp.include_router(setup_initial_survey())
 dp.include_router(
     setup_food_recognition(
         storage,
@@ -1479,10 +1486,14 @@ dp.include_router(
 #endregion
 
 #region Хендлеры: корень и навигация
-# /start — сброс FSM и показ главного меню.
+# /start — при INITIAL_SURVEY_ENABLED → первичный опрос, иначе главное меню.
 # Регистрируется на dp (не на menu_router), чтобы всегда быть доступным.
+# Позже: вместо флага — проверка в БД (прошёл ли пользователь опрос).
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext) -> None:
+    if INITIAL_SURVEY_ENABLED:
+        await start_initial_survey(message, state)
+        return
     await state.clear()
     await show_main_menu(message, state)
 

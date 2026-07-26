@@ -11,6 +11,7 @@ Telegram-бот для учёта калорий по фото/тексту (Nut
 ```
 NutriSnap_Twin_bot/
 ├── main.py                # Точка входа: /start, главное меню, stub БД (🔰), роутеры
+├── initial_survey.py      # Первичный опрос (онбординг); пока заглушка
 ├── food_recognition.py    # FSM-флоу распознавания еды (Gemini + confirm UI)
 ├── test_3_local.py        # Локальный прототип анализа фото (без Telegram)
 ├── test_4_tg_bot.py       # Минимальный каркас бота (/start + кнопка)
@@ -27,8 +28,9 @@ NutriSnap_Twin_bot/
 ```
 main.py
   ├── Bot + Dispatcher + MemoryStorage
-  ├── /start → show_main_menu
+  ├── /start → start_initial_survey (если INITIAL_SURVEY_ENABLED) иначе show_main_menu
   ├── include_router(menu_router)          # Reply-меню, дневник, настройки, выгрузка
+  ├── include_router(setup_initial_survey())  # первичный опрос (заглушка)
   └── include_router(setup_food_recognition(..., on_food_saved=_on_food_saved))
         └── food_recognition.py (Router: фото/текст/callbacks/FSM)
             ├── NotMenuButtonFilter — не слать тексты кнопок меню в Gemini
@@ -41,7 +43,8 @@ main.py
 
 - Библиотека: `aiogram` 3.x + `MemoryStorage` (FSM), long polling.
 - Проверка `TELEGRAM_BOT_API_KEY` / `GEMINI_API_KEY`, старт polling.
-- `/start` → главный экран «🏠 Главный экран | Сегодня» (HTML): ккал `съедено/цель (%%)`, бар `▓▓/█`, остаток или превышение (⚠️ Перебор; при `goal=muscle_gain` — 💪 Донабор), сумма БЖУ, список записей с эмодзи и временем (без БЖУ по блюдам).
+- Флаг `INITIAL_SURVEY_ENABLED` (сейчас `True`): при `/start` → `start_initial_survey` вместо главного меню. Позже — проверка в БД «прошёл ли опрос».
+- `/start` (флаг выкл.) → главный экран «🏠 Главный экран | Сегодня» (HTML): ккал `съедено/цель (%%)`, бар `▓▓/█`, остаток или превышение (⚠️ Перебор; при `goal=muscle_gain` — 💪 Донабор), сумма БЖУ, список записей с эмодзи и временем (без БЖУ по блюдам).
 - Дневник (`format_day_card(..., show_item_macros=True)` / `format_log_entry_diary`): запись в 3 строки — время → `emoji блюдо — ккал` → курсив `– (Б Nгр. • Ж Nгр. • У Nгр.)`; между записями пустая строка.
 - `MenuFlow`: выбор блюда (edit/delete), час смены суток, ккал, цель, отзыв, окно выгрузки «месяц», флоу reminders (title → window → min_cal / list → item).
 - ReplyKeyboard: корень / дневник / настройки / выгрузка / цели / напоминания; в разделах (кроме «Распознать») есть `🏠 Главное меню`. Экран «Распознать» — только `⬅️ Назад` (в корень).
@@ -56,6 +59,12 @@ main.py
 - «Изменить данные профиля»: сводка (имя/пол/возраст/рост/вес/активность/цель/ккал); кнопки «Обновить данные пользователя» (подтверждение → заглушка онбординга), «Тип отслеживания», «Целевые ккал».
 - «Тип отслеживания»: показывает текущий `goal`; при смене на другой — «данные обновлены» + вопрос про пересчёт целевых ккал (`settings_goal_recalc`); Да → заглушка пересчёта, Нет/Назад → сводка профиля. Тот же тип — сразу назад без вопроса.
 - «Изменить / Удалить блюдо»: Reply-клавиатура с номерами (по 5 в ряд, страница по 10: `kb_pick_dish` + `▶️ Далее` / `◀️ Ранее`); снизу «⬅️ Назад». Выбор номера → edit-заглушка / stub delete.
+
+### `initial_survey.py`
+
+- Router `initial_survey` + FSM `SurveyFlow.q1`.
+- `start_initial_survey(message, state)` — сброс FSM, состояние `q1`, сообщение «Первый вопрос…» + `ReplyKeyboardRemove`.
+- `setup_initial_survey()` → router. Пока без хендлеров ответов; шаги опроса добавим позже (см. `add_info.md`).
 
 ### `food_recognition.py`
 
@@ -95,7 +104,7 @@ main.py
 ## Планируемое развитие
 
 - Подключить реальную БД вместо `🔰` stub в `main.py` и `save_to_console`.
-- Онбординг (категории / профиль).
+- Доделать первичный опрос в `initial_survey.py` (категории / профиль); хранить в БД «прошёл ли опрос»; выключить `INITIAL_SURVEY_ENABLED` и роутить по БД.
 - Планировщик «пропущенных» напоминаний по концу окна + сброс `is_triggered_today` по `day_change_hour`.
 - Дневной лимит распознаваний (на ветке «Неверно» → подсказка).
 - Форма редактирования блюда (сейчас только выбор + stub).
