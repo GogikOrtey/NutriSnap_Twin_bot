@@ -588,6 +588,15 @@ def kb_recognize() -> ReplyKeyboardMarkup:
     )
 
 
+# Reply-клавиатура только навигации: «Назад» + «Главное меню».
+# Используется экранами ввода (смена суток, целевые ккал, обратная связь).
+def kb_nav_only() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)]],
+        resize_keyboard=True,
+    )
+
+
 # Reply-клавиатура раздела «Настройки» (без напоминаний).
 # Используется show_settings.
 def kb_settings() -> ReplyKeyboardMarkup:
@@ -1436,7 +1445,7 @@ async def on_set_day_hour(message: Message, state: FSMContext) -> None:
         f"Сейчас: {user['day_change_hour']:02d}:00 "
         f"(часовой пояс {user['timezone']}).\n"
         "Введите час от 0 до 23 (например, 4).",
-        reply_markup=kb_settings(),
+        reply_markup=kb_nav_only(),
     )
 
 
@@ -1478,7 +1487,7 @@ async def on_feedback_start(message: Message, state: FSMContext) -> None:
         "Напишите текст отзыва. Можно прикрепить фото "
         "(подпись к фото тоже подойдёт).\n"
         "Чтобы отменить — «⬅️ Назад» или «🏠 Главное меню».",
-        reply_markup=kb_settings(),
+        reply_markup=kb_nav_only(),
     )
 
 
@@ -1594,7 +1603,7 @@ async def on_set_calories(message: Message, state: FSMContext) -> None:
         "\n"
         f"Сейчас: {user['daily_calories']} ккал.\n"
         "Введите новое целое число (например, 2000).",
-        reply_markup=kb_profile(),
+        reply_markup=kb_nav_only(),
     )
 
 
