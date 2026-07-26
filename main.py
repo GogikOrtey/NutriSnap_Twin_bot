@@ -12,7 +12,7 @@ main.py — точка входа Telegram-бота NutriSnap (@nutrisnap_ultra_
 1. Импорты, .env, константы кнопок, MenuFlow.
 2. Stub-хранилище и 🔰-хелперы (заглушки вместо SQL).
 3. Форматтеры экранов и Reply/Inline-клавиатуры.
-4. UI-хелперы: edit последнего экрана меню (без delete — тормозит).
+4. UI-хелперы: Reply → новое сообщение; Inline дневника → edit; чистка «Выберите действие:».
 5. Router меню + хендлеры; /start открывает главное меню.
 6. main() — старт polling.
 """
@@ -508,66 +508,42 @@ def kb_diary_nav(offset: int = 0) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[row])
 #endregion
 
-#region UI: одно «живое» сообщение меню
-# FSM: id редактируемого сообщения экрана + отпечаток Reply-клавиатуры.
-# Удаление сообщений не используем (тормозит); предпочитаем edit_text.
+#region UI: экраны меню
+# Reply-кнопки → всегда новое сообщение (edit путает).
+# Inline под карточкой дневника → edit_text.
+# «Выберите действие:» — служебное; старые такие сообщения удаляем.
 UI_MESSAGE_ID_KEY = "ui_message_id"
-UI_REPLY_KB_KEY = "ui_reply_kb"
+UI_ACTION_MSG_IDS_KEY = "ui_action_msg_ids"
 
 
-# Отпечаток Reply-клавиатуры, чтобы понимать — сменился ли набор кнопок.
-# Используется replace_ui / show_diary: новое сообщение только при смене клавиатуры.
-def reply_kb_fingerprint(reply_markup: ReplyKeyboardMarkup | None) -> str | None:
-    if reply_markup is None:
-        return None
-    return "|".join(btn.text for row in reply_markup.keyboard for btn in row)
+# Удаляет ранее отправленные «Выберите действие:» (и подобные служебные).
+# Используется при уходе с экрана дневника и перед новым показом дневника.
+async def clear_action_prompts(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    ids: list[int] = list(data.get(UI_ACTION_MSG_IDS_KEY) or [])
+    if not ids:
+        return
+    bot = message.bot
+    chat_id = message.chat.id
+    for mid in ids:
+        try:
+            await bot.delete_message(chat_id, mid)
+        except Exception:
+            pass
+    await state.update_data(**{UI_ACTION_MSG_IDS_KEY: []})
 
 
-# Показывает экран меню: правит последнее UI-сообщение или шлёт новое.
-# ReplyKeyboard через edit нельзя — при смене кнопок отправляем новое сообщение.
-# Используется show_* и промптами подменю.
+# Новый экран по Reply-кнопке: шлём новое сообщение, править старое не надо.
+# Заодно чистит служебные «Выберите действие:». Используется show_* и промптами.
 async def replace_ui(
     message: Message,
     state: FSMContext,
     text: str,
     reply_markup: ReplyKeyboardMarkup | InlineKeyboardMarkup | None = None,
-) -> Message | None:
-    data = await state.get_data()
-    mid: int | None = data.get(UI_MESSAGE_ID_KEY)
-    old_fp: str | None = data.get(UI_REPLY_KB_KEY)
-    new_fp = (
-        reply_kb_fingerprint(reply_markup)
-        if isinstance(reply_markup, ReplyKeyboardMarkup)
-        else old_fp
-    )
-    need_new_for_kb = (
-        isinstance(reply_markup, ReplyKeyboardMarkup) and new_fp != old_fp
-    )
-
-    if mid and not need_new_for_kb:
-        try:
-            kwargs: dict[str, Any] = {
-                "text": text,
-                "chat_id": message.chat.id,
-                "message_id": mid,
-            }
-            if isinstance(reply_markup, InlineKeyboardMarkup):
-                kwargs["reply_markup"] = reply_markup
-            else:
-                # ReplyKeyboard через edit нельзя — снимаем прежний inline, если был.
-                kwargs["reply_markup"] = None
-            await message.bot.edit_message_text(**kwargs)
-            return None
-        except Exception:
-            pass
-
+) -> Message:
+    await clear_action_prompts(message, state)
     sent = await message.answer(text, reply_markup=reply_markup)
-    await state.update_data(
-        **{
-            UI_MESSAGE_ID_KEY: sent.message_id,
-            UI_REPLY_KB_KEY: new_fp if isinstance(reply_markup, ReplyKeyboardMarkup) else old_fp,
-        }
-    )
+    await state.update_data(**{UI_MESSAGE_ID_KEY: sent.message_id})
     return sent
 #endregion
 
@@ -577,23 +553,9 @@ async def replace_ui(
 async def show_main_menu(
     message: Message, state: FSMContext, user_id: int | None = None
 ) -> None:
-    data = await state.get_data()
-    keep_mid = data.get(UI_MESSAGE_ID_KEY)
-    keep_kb = data.get(UI_REPLY_KB_KEY)
+    await clear_action_prompts(message, state)
     await state.clear()
-    await state.update_data(
-        diary_offset=0,
-        export_return="main",
-        menu_screen="main",
-        **{
-            k: v
-            for k, v in (
-                (UI_MESSAGE_ID_KEY, keep_mid),
-                (UI_REPLY_KB_KEY, keep_kb),
-            )
-            if v is not None
-        },
-    )
+    await state.update_data(diary_offset=0, export_return="main", menu_screen="main")
     uid = user_id if user_id is not None else (message.from_user.id if message.from_user else 0)
     user = stub_get_user(uid)
     user_id = uid
@@ -612,7 +574,7 @@ async def show_main_menu(
 # Показывает дневник за дату с diary_offset + inline-навигацию.
 # Используется кнопкой «Дневник» и callback вчера/завтра.
 # user_id обязателен из callback: у callback.message.from_user — бот, не пользователь.
-# edit_message: при листании дней — правим карточку на месте, без новых сообщений.
+# edit_message: только для inline «Вчера/Завтра» — правим карточку на месте.
 async def show_diary(
     message: Message,
     state: FSMContext,
@@ -636,8 +598,8 @@ async def show_diary(
     title = f"📒 Дневник питания — {logged_date}"
     text = format_day_card(user, logged_date, logs, is_today=is_today, title=title)
     nav = kb_diary_nav(offset)
-    diary_fp = reply_kb_fingerprint(kb_diary())
 
+    # Inline-навигация: только правка карточки, «Выберите действие:» не трогаем.
     if edit_message is not None:
         try:
             await edit_message.edit_text(text, reply_markup=nav)
@@ -646,31 +608,16 @@ async def show_diary(
         except Exception:
             pass
 
-    # Карточка с inline; Reply-клавиатуру шлём отдельным сообщением только при смене кнопок
+    # Reply-вход в дневник: новая карточка + служебная строка с Reply-клавиатурой
     # (Telegram не смешивает Reply и Inline в одном сообщении).
-    mid: int | None = data.get(UI_MESSAGE_ID_KEY)
-    old_fp: str | None = data.get(UI_REPLY_KB_KEY)
-    if mid:
-        try:
-            await message.bot.edit_message_text(
-                text=text,
-                chat_id=message.chat.id,
-                message_id=mid,
-                reply_markup=nav,
-            )
-            if old_fp != diary_fp:
-                await message.answer("Выберите действие:", reply_markup=kb_diary())
-            await state.update_data(
-                **{UI_MESSAGE_ID_KEY: mid, UI_REPLY_KB_KEY: diary_fp}
-            )
-            return
-        except Exception:
-            pass
-
+    await clear_action_prompts(message, state)
     card = await message.answer(text, reply_markup=nav)
-    await message.answer("Выберите действие:", reply_markup=kb_diary())
+    actions = await message.answer("Выберите действие:", reply_markup=kb_diary())
     await state.update_data(
-        **{UI_MESSAGE_ID_KEY: card.message_id, UI_REPLY_KB_KEY: diary_fp}
+        **{
+            UI_MESSAGE_ID_KEY: card.message_id,
+            UI_ACTION_MSG_IDS_KEY: [actions.message_id],
+        }
     )
 
 
@@ -689,7 +636,7 @@ async def show_recognize(message: Message, state: FSMContext) -> None:
         "\n"
         "📋 После оценки появится превью — подтвердите или поправьте результат\n"
         "\n"
-        "🚀 Можешь начинать распознавание прямо сейчас — отправь в чат фото или текст описания еды"
+        "🚀 Можешь начинать распознавание прямо сейчас — отправь в чат фото или текст описания еды:"
     )
     await replace_ui(message, state, text, reply_markup=kb_recognize())
 
@@ -887,7 +834,7 @@ async def on_add_dish(message: Message, state: FSMContext) -> None:
         "➕ Добавить блюдо\n"
         "\n"
         "Просто пришлите фото блюда (можно с подписью) или напишите текстом, "
-        "что съели — бот оценит ккал и БЖУ. Кнопка меню для этого не нужна.",
+        "что съели — бот оценит ккал и БЖУ",
         reply_markup=kb_diary(),
     )
 
