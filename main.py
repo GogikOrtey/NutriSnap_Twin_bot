@@ -1507,7 +1507,7 @@ async def _on_food_saved(
     await notify_reminders_after_food(user_id, calories, bot, chat_id)
 
 
-# Колбэк после первичного опроса: stub-профиль → экран «Распознать» (ждём фото/текст).
+# Колбэк после первичного опроса: stub-профиль → «всё настроено» + памятка «Распознать».
 # Передаётся в initial_survey.setup_initial_survey(on_complete=...).
 async def _on_survey_complete(
     message: Message,
@@ -1532,6 +1532,12 @@ async def _on_survey_complete(
         daily_calories=int(profile["daily_calories"]),
     )
     await state.clear()
+    await message.answer(
+        "Отлично, всё настроено! ✅\n"
+        "\n"
+        "Теперь бот полностью готов к работе. Попробуй отправить фото "
+        "или описание еды в чат прямо сейчас"
+    )
     await show_recognize(message, state)
 
 

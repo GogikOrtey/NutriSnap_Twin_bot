@@ -32,7 +32,7 @@ main.py
   ├── include_router(menu_router)          # Reply-меню, дневник, настройки, выгрузка
   ├── include_router(setup_initial_survey(on_complete=_on_survey_complete))
   │     └── welcome → … → goal → timezone → calories_confirm[/edit]
-  │           → stub_set_profile(timezone, daily_calories) → show_recognize
+  │           → stub_set_profile → «всё настроено» + show_recognize (💡)
   └── include_router(setup_food_recognition(..., on_food_saved=_on_food_saved))
         └── food_recognition.py (Router: фото/текст/callbacks/FSM)
             ├── NotMenuButtonFilter — не слать тексты кнопок меню в Gemini
@@ -55,7 +55,7 @@ main.py
 - Навигация меню: Reply → новое сообщение; если есть «Выберите действие:» — оно превращается в новый экран через `edit_text` (без анимации пыли, как «Анализирую…» → превью). Inline «Вчера/Завтра» → `edit_text` карточки. Хвосты служебных — `dismiss_action_prompts` (edit в невидимый символ, не delete).
 - Логическая дата: `timezone` + `day_change_hour` (по умолчанию Europe/Moscow, 4:00).
 - БД не подключена: `stub_get_*` / `stub_set_*` / `stub_set_profile` / `stub_delete_*` / `stub_send_feedback` / reminders-stub с маркером `🔰` и in-memory данными (3 блюда на «сегодня», поле `emoji`; `reminders` пустой до добавления пользователем).
-- `RECOGNIZE_HINT_TEXT` — общий текст памятки «Распознать» (кнопка меню и финал опроса через `show_recognize`).
+- `RECOGNIZE_HINT_TEXT` — общий текст памятки «Распознать» (кнопка меню и финал опроса через `show_recognize`). После опроса сначала «Отлично, всё настроено! ✅…», затем памятка с 💡.
 - Выгрузка журнала → `.txt` (`BufferedInputFile`) с промпт-шапкой профиля; периоды: день / вчера / 7 дней / окна 0–30 / 30–60 / 60–90.
 - Настройки: час смены суток, **🔔 Напоминания и Витамины**, выгрузка, отзыв (текст/фото, stub без email), «Изменить данные профиля».
 - Напоминания (`reminders`): title + окно (Завтрак 07–11 / Обед 12–16 / Ужин 17–22) + `min_calories` (0 или 250); список с вкл/выкл и удалением. После ✅ еды — `stub_trigger_reminders_for_food` → сообщение «🔔 Нужно: …» с inline «⏰ На следующую еду» / «✅ Понятно». Заморозка по `last_active_at` (>3 дня) и «пропущено по концу окна» — stub/cron позже (`stub_check_missed_reminders`).
