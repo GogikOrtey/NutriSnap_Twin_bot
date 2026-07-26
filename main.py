@@ -424,7 +424,7 @@ def format_day_card(
                 "чтобы зафиксировать прием пищи!"
             )
         else:
-            lines.append("За этот день записей нет.")
+            lines.append("За этот день записей нет")
         return "\n".join(lines)
 
     eaten = sum(int(r["calories"] or 0) for r in logs)
@@ -626,7 +626,7 @@ def format_dish_pick_prompt(
     if total > PICK_PAGE_SIZE:
         page_hint = (
             f"\nКнопки на экране: {start}–{end} "
-            f"(стр. {page + 1}/{max_page + 1})."
+            f"(стр. {page + 1}/{max_page + 1})"
         )
     return (
         f"{title}\n"
@@ -635,7 +635,7 @@ def format_dish_pick_prompt(
         f"{format_numbered_logs(user, logs)}"
         f"{page_hint}\n"
         "\n"
-        "Или нажмите «⬅️ Назад»."
+        "Или нажмите «⬅️ Назад»"
     )
 
 
@@ -1037,7 +1037,7 @@ async def show_export_menu(message: Message, state: FSMContext) -> None:
         "📤 Выгрузка журнала\n"
         "\n"
         "Выберите период. Файл придёт в формате .txt "
-        "(удобно вставить в нейросеть для рекомендаций).",
+        "(удобно вставить в нейросеть для рекомендаций)",
         reply_markup=kb_export(),
     )
 
@@ -1247,7 +1247,7 @@ async def on_edit_dish(message: Message, state: FSMContext) -> None:
         await replace_ui(
             message,
             state,
-            "За этот день записей нет — менять нечего.",
+            "За этот день записей нет — менять нечего",
             reply_markup=kb_diary(),
         )
         return
@@ -1267,11 +1267,11 @@ async def on_edit_dish_pick(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     pick_ids: list[int] = list(data.get("pick_logs") or [])
     if not text.isdigit():
-        await message.answer("Выберите номер блюда кнопкой на клавиатуре.")
+        await message.answer("Выберите номер блюда кнопкой на клавиатуре")
         return
     idx = int(text)
     if idx < 1 or idx > len(pick_ids):
-        await message.answer(f"Нужен номер от 1 до {len(pick_ids)}.")
+        await message.answer(f"Нужен номер от 1 до {len(pick_ids)}")
         return
     log_id = pick_ids[idx - 1]
     await state.set_state(None)
@@ -1280,7 +1280,7 @@ async def on_edit_dish_pick(message: Message, state: FSMContext) -> None:
         message,
         state,
         f"Выбрано блюдо #{idx} (id={log_id}).\n"
-        "✏️ Сохранение изменений в БД скоро — форма редактирования появится позже.",
+        "✏️ Сохранение изменений в БД скоро — форма редактирования появится позже",
         reply_markup=kb_diary(),
     )
 
@@ -1303,7 +1303,7 @@ async def on_delete_dish(message: Message, state: FSMContext) -> None:
         await replace_ui(
             message,
             state,
-            "За этот день записей нет — удалять нечего.",
+            "За этот день записей нет — удалять нечего",
             reply_markup=kb_diary(),
         )
         return
@@ -1323,11 +1323,11 @@ async def on_delete_dish_pick(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     pick_ids: list[int] = list(data.get("pick_logs") or [])
     if not text.isdigit():
-        await message.answer("Выберите номер блюда кнопкой на клавиатуре.")
+        await message.answer("Выберите номер блюда кнопкой на клавиатуре")
         return
     idx = int(text)
     if idx < 1 or idx > len(pick_ids):
-        await message.answer(f"Нужен номер от 1 до {len(pick_ids)}.")
+        await message.answer(f"Нужен номер от 1 до {len(pick_ids)}")
         return
     log_id = pick_ids[idx - 1]
     user_id = message.from_user.id if message.from_user else 0
@@ -1474,7 +1474,7 @@ async def on_export_month_pick(message: Message, state: FSMContext) -> None:
         f"{title} ({date_from} … {date_to})",
         f"diary_month_{date_from}_{date_to}.txt",
     )
-    await replace_ui(message, state, "Готово.", reply_markup=kb_export())
+    await replace_ui(message, state, "Готово", reply_markup=kb_export())
 #endregion
 
 #region Хендлеры: настройки
@@ -1517,7 +1517,7 @@ async def on_update_profile_yes(message: Message, state: FSMContext) -> None:
         "🔜 Перекидываем вас на первоначальный опрос…\n"
         "\n"
         "Заглушка: сам опрос подключим позже. "
-        "Сейчас вы остаётесь в разделе данных профиля.",
+        "Сейчас вы остаётесь в разделе данных профиля",
         reply_markup=kb_profile(),
     )
 
@@ -1546,7 +1546,7 @@ async def on_set_day_hour(message: Message, state: FSMContext) -> None:
         "\n"
         f"Сейчас: {user['day_change_hour']:02d}:00 "
         f"(часовой пояс {user['timezone']}).\n"
-        "Введите час от 0 до 23 (например, 4).",
+        "Введите час от 0 до 23 (например, 4)",
         reply_markup=kb_nav_only(),
     )
 
@@ -1556,7 +1556,7 @@ async def on_set_day_hour(message: Message, state: FSMContext) -> None:
 async def on_set_day_hour_value(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if not text.isdigit() or not (0 <= int(text) <= 23):
-        await message.answer("Введите целое число часа от 0 до 23.")
+        await message.answer("Введите целое число часа от 0 до 23")
         return
     user_id = message.from_user.id if message.from_user else 0
     stub_set_day_change_hour(user_id, int(text))
@@ -1564,7 +1564,7 @@ async def on_set_day_hour_value(message: Message, state: FSMContext) -> None:
     await replace_ui(
         message,
         state,
-        f"✅ Смена суток установлена на {int(text):02d}:00 (🔰 stub).",
+        f"✅ Смена суток установлена на {int(text):02d}:00 (🔰 stub)",
         reply_markup=kb_settings(),
     )
 
@@ -1588,7 +1588,7 @@ async def on_feedback_start(message: Message, state: FSMContext) -> None:
         "\n"
         "Напишите текст отзыва. Можно прикрепить фото "
         "(подпись к фото тоже подойдёт).\n"
-        "Чтобы отменить — «⬅️ Назад» или «🏠 Главное меню».",
+        "Чтобы отменить — «⬅️ Назад» или «🏠 Главное меню»",
         reply_markup=kb_nav_only(),
     )
 
@@ -1603,7 +1603,7 @@ async def on_feedback_text(message: Message, state: FSMContext) -> None:
     await replace_ui(
         message,
         state,
-        "✅ Спасибо! Отзыв передан разработчику (🔰 stub, без email).",
+        "✅ Спасибо! Отзыв передан разработчику (🔰 stub, без email)",
         reply_markup=kb_settings(),
     )
 
@@ -1618,7 +1618,7 @@ async def on_feedback_photo(message: Message, state: FSMContext) -> None:
     await replace_ui(
         message,
         state,
-        "✅ Спасибо! Отзыв передан разработчику (🔰 stub, без email).",
+        "✅ Спасибо! Отзыв передан разработчику (🔰 stub, без email)",
         reply_markup=kb_settings(),
     )
 
@@ -1680,7 +1680,7 @@ async def on_goal_recalc_yes(message: Message, state: FSMContext) -> None:
         "🔜 Пересчёт целевых ккал…\n"
         "\n"
         "Заглушка: формулу пересчёта подключим позже. "
-        "Сейчас вы остаётесь в разделе данных профиля.",
+        "Сейчас вы остаётесь в разделе данных профиля",
         reply_markup=kb_profile(),
     )
 
@@ -1704,7 +1704,7 @@ async def on_set_calories(message: Message, state: FSMContext) -> None:
         "🔥 Целевые ккал в сутки\n"
         "\n"
         f"Сейчас: {user['daily_calories']} ккал.\n"
-        "Введите новое целое число (например, 2000).",
+        "Введите новое целое число (например, 2000)",
         reply_markup=kb_nav_only(),
     )
 
@@ -1714,7 +1714,7 @@ async def on_set_calories(message: Message, state: FSMContext) -> None:
 async def on_set_calories_value(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if not text.isdigit() or int(text) <= 0:
-        await message.answer("Введите целое положительное число ккал.")
+        await message.answer("Введите целое положительное число ккал")
         return
     user_id = message.from_user.id if message.from_user else 0
     stub_set_daily_calories(user_id, int(text))
