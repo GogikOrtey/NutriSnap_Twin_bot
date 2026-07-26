@@ -380,7 +380,32 @@ def format_log_datetime(created_at: int, timezone: str) -> str:
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
+# Граммы макронутриента в формате дневника: «14гр.».
+# Используется format_log_entry_diary.
+def format_macro_gr(value: float | int) -> str:
+    return f"{int(round(float(value)))}гр."
+
+
+# Блок одной записи дневника: время → блюдо/ккал → курсив с БЖУ.
+# Используется format_day_card при show_item_macros=True.
+def format_log_entry_diary(row: dict[str, Any], timezone: str) -> list[str]:
+    t = format_log_time(row["created_at"], timezone)
+    emoji = format_log_emoji(row)
+    dish = html.escape(str(row.get("title") or "Блюдо"))
+    cal = int(row["calories"] or 0)
+    p = format_macro_gr(row.get("proteins") or 0)
+    f = format_macro_gr(row.get("fats") or 0)
+    c = format_macro_gr(row.get("carbs") or 0)
+    indent = "      "
+    return [
+        f"▫️ <code>{t}</code>",
+        f"{indent}{emoji} {dish} — <b>{cal} ккал</b>",
+        f"{indent}<i>– (Б {p} • Ж {f} • У {c})</i>",
+    ]
+
+
 # Текст карточки дня (HTML): ккал/бар/БЖУ + список записей или пустой день.
+# show_item_macros=True — многострочный формат записи с БЖУ (только дневник).
 # Используется главным меню и экраном дневника (parse_mode=HTML).
 def format_day_card(
     user: dict[str, Any],
@@ -389,6 +414,7 @@ def format_day_card(
     *,
     is_today: bool,
     title: str,
+    show_item_macros: bool = False,
 ) -> str:
     lines = [title, ""]
     if not logs:
@@ -438,14 +464,20 @@ def format_day_card(
     )
     lines.append("")
     lines.append("📋 <b>Записи за день:</b>")
-    for row in logs:
-        t = format_log_time(row["created_at"], user["timezone"])
-        emoji = format_log_emoji(row)
-        dish = html.escape(str(row.get("title") or "Блюдо"))
-        cal = int(row["calories"] or 0)
-        lines.append(
-            f"▫️ <code>{t}</code> {emoji} {dish} — <b>{cal} ккал</b>"
-        )
+    lines.append("")
+    for i, row in enumerate(logs):
+        if show_item_macros:
+            if i > 0:
+                lines.append("")
+            lines.extend(format_log_entry_diary(row, user["timezone"]))
+        else:
+            t = format_log_time(row["created_at"], user["timezone"])
+            emoji = format_log_emoji(row)
+            dish = html.escape(str(row.get("title") or "Блюдо"))
+            cal = int(row["calories"] or 0)
+            lines.append(
+                f"▫️ <code>{t}</code> {emoji} {dish} — <b>{cal} ккал</b>"
+            )
     return "\n".join(lines)
 
 
@@ -906,7 +938,14 @@ async def show_diary(
     logs = stub_get_food_logs_for_date(user_id, logged_date)
     is_today = offset == 0
     title = f"📒 <b>Дневник питания</b> — {logged_date}"
-    text = format_day_card(user, logged_date, logs, is_today=is_today, title=title)
+    text = format_day_card(
+        user,
+        logged_date,
+        logs,
+        is_today=is_today,
+        title=title,
+        show_item_macros=True,
+    )
     nav = kb_diary_nav(offset)
 
     # Inline-навигация: только правка карточки, «Выберите действие:» не трогаем.
