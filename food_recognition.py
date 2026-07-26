@@ -19,7 +19,7 @@ food_recognition.py — FSM-флоу распознавания еды для Nu
 7. Утилиты (save_to_console, download_photo_temp, parse_food_result).
 8. Confirm UI (show/finalize/schedule/handle_ai_result).
 9. Хендлеры: фото, подсказка, вес, текст, callbacks, меню правок.
-10. setup_food_recognition — передаёт MemoryStorage и возвращает router.
+10. setup_food_recognition — MemoryStorage + тексты кнопок меню; возвращает router.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from aiogram import Bot, F, Router
-from aiogram.filters import StateFilter
+from aiogram.filters import BaseFilter, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.base import StorageKey
@@ -129,6 +129,17 @@ router = Router(name="food_recognition")
 
 # MemoryStorage из main.py — нужен таймеру автоподтверждения (schedule_auto_confirm).
 _storage: MemoryStorage | None = None
+
+# Тексты кнопок главного меню (из main.py) — не отправлять в Gemini как описание еды.
+_menu_button_texts: frozenset[str] = frozenset()
+
+
+# Фильтр: текст сообщения не является кнопкой главного меню (проверка на runtime).
+# Используется в on_text_food, чтобы меню из main.py не уходило в Gemini.
+class NotMenuButtonFilter(BaseFilter):
+    async def __call__(self, message: Message) -> bool:
+        text = (message.text or "").strip()
+        return bool(text) and text not in _menu_button_texts
 
 
 # FSM-состояния учёта еды: подтверждение, меню правок, подсказка, ввод веса.
@@ -745,7 +756,12 @@ async def on_weight_text(message: Message, state: FSMContext) -> None:
 #region Обработчик текста
 # Текстовая ветка учёта: отправка текста в нейронку → confirm UI.
 # Не срабатывает в waiting_hint / waiting_weight (отдельные хендлеры выше).
-@router.message(StateFilter(None, FoodFlow.confirming), F.text)
+# Кнопки главного меню отфильтрованы NotMenuButtonFilter — их ловит menu_router.
+@router.message(
+    StateFilter(None, FoodFlow.confirming),
+    F.text,
+    NotMenuButtonFilter(),
+)
 async def on_text_food(message: Message, state: FSMContext, bot: Bot) -> None:
     # Если пользователь пишет во время confirming — считаем новым запросом.
     await state.clear()
@@ -957,10 +973,14 @@ async def on_cancel(callback: CallbackQuery, state: FSMContext) -> None:
 #endregion
 
 #region Setup
-# Подключает общий MemoryStorage для FSM/таймера и возвращает router модуля.
-# Используется в main.py: dp.include_router(setup_food_recognition(storage)).
-def setup_food_recognition(storage: MemoryStorage) -> Router:
-    global _storage
+# Подключает MemoryStorage и набор текстов кнопок меню; возвращает router модуля.
+# Используется в main.py: setup_food_recognition(storage, menu_button_texts=...).
+def setup_food_recognition(
+    storage: MemoryStorage,
+    menu_button_texts: frozenset[str] | None = None,
+) -> Router:
+    global _storage, _menu_button_texts
     _storage = storage
+    _menu_button_texts = menu_button_texts or frozenset()
     return router
 #endregion
