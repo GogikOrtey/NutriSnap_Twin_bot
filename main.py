@@ -12,8 +12,9 @@ main.py — точка входа Telegram-бота NutriSnap (@nutrisnap_ultra_
 1. Импорты, .env, константы кнопок, MenuFlow.
 2. Stub-хранилище и 🔰-хелперы (заглушки вместо SQL).
 3. Форматтеры экранов и Reply/Inline-клавиатуры.
-4. Router меню + хендлеры; /start открывает главное меню.
-5. main() — старт polling.
+4. UI-хелперы: удаление/замена предыдущих сообщений меню (без спама в чат).
+5. Router меню + хендлеры; /start открывает главное меню.
+6. main() — старт polling.
 """
 
 from __future__ import annotations
@@ -494,16 +495,61 @@ def kb_goal() -> ReplyKeyboardMarkup:
 
 
 # Inline «Вчера / Завтра» под сообщением дневника.
+# «Завтра» скрыта на текущем дне (offset >= 0), чтобы не уходить в будущее.
 # Используется show_diary.
-def kb_diary_nav() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="◀️ Вчера", callback_data=CALLBACK_DIARY_PREV),
-                InlineKeyboardButton(text="▶️ Завтра", callback_data=CALLBACK_DIARY_NEXT),
-            ]
-        ]
+def kb_diary_nav(offset: int = 0) -> InlineKeyboardMarkup:
+    row: list[InlineKeyboardButton] = [
+        InlineKeyboardButton(text="◀️ Вчера", callback_data=CALLBACK_DIARY_PREV),
+    ]
+    if offset < 0:
+        row.append(
+            InlineKeyboardButton(text="▶️ Завтра", callback_data=CALLBACK_DIARY_NEXT)
+        )
+    return InlineKeyboardMarkup(inline_keyboard=[row])
+#endregion
+
+#region UI: одно «живое» сообщение меню
+# Ключ FSM: id сообщений бота текущего экрана меню (удаляем/редактируем при навигации).
+UI_MESSAGE_IDS_KEY = "ui_message_ids"
+
+
+# Удаляет предыдущие сообщения UI-меню в чате.
+# Используется перед показом нового экрана и при /start.
+async def clear_ui_messages(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    ids: list[int] = list(data.get(UI_MESSAGE_IDS_KEY) or [])
+    if not ids:
+        return
+    bot = message.bot
+    chat_id = message.chat.id
+    for mid in ids:
+        try:
+            await bot.delete_message(chat_id, mid)
+        except Exception:
+            pass
+    await state.update_data(**{UI_MESSAGE_IDS_KEY: []})
+
+
+# Запоминает id сообщений текущего экрана для последующей замены.
+# Используется replace_ui и show_diary.
+async def remember_ui_messages(state: FSMContext, *messages: Message) -> None:
+    await state.update_data(
+        **{UI_MESSAGE_IDS_KEY: [m.message_id for m in messages]}
     )
+
+
+# Удаляет старый UI и отправляет новый экран (текст + Reply/Inline-клавиатура).
+# Используется show_* и промптами подменю: Telegram не даёт менять ReplyKeyboard через edit.
+async def replace_ui(
+    message: Message,
+    state: FSMContext,
+    text: str,
+    reply_markup: ReplyKeyboardMarkup | InlineKeyboardMarkup | None = None,
+) -> Message:
+    await clear_ui_messages(message, state)
+    sent = await message.answer(text, reply_markup=reply_markup)
+    await remember_ui_messages(state, sent)
+    return sent
 #endregion
 
 #region Показ экранов
@@ -512,6 +558,7 @@ def kb_diary_nav() -> InlineKeyboardMarkup:
 async def show_main_menu(
     message: Message, state: FSMContext, user_id: int | None = None
 ) -> None:
+    await clear_ui_messages(message, state)
     await state.clear()
     await state.update_data(diary_offset=0, export_return="main", menu_screen="main")
     uid = user_id if user_id is not None else (message.from_user.id if message.from_user else 0)
@@ -526,14 +573,19 @@ async def show_main_menu(
         is_today=True,
         title="🏠 Главное меню",
     )
-    await message.answer(text, reply_markup=kb_main_menu())
+    sent = await message.answer(text, reply_markup=kb_main_menu())
+    await remember_ui_messages(state, sent)
 
 
 # Показывает дневник за дату с diary_offset + inline-навигацию.
 # Используется кнопкой «Дневник» и callback вчера/завтра.
 # user_id обязателен из callback: у callback.message.from_user — бот, не пользователь.
+# edit_message: при листании дней — правим карточку на месте, без новых сообщений.
 async def show_diary(
-    message: Message, state: FSMContext, user_id: int | None = None
+    message: Message,
+    state: FSMContext,
+    user_id: int | None = None,
+    edit_message: Message | None = None,
 ) -> None:
     data = await state.get_data()
     offset = int(data.get("diary_offset", 0))
@@ -551,8 +603,21 @@ async def show_diary(
     is_today = offset == 0
     title = f"📒 Дневник питания — {logged_date}"
     text = format_day_card(user, logged_date, logs, is_today=is_today, title=title)
-    await message.answer(text, reply_markup=kb_diary_nav())
-    await message.answer("Выберите действие:", reply_markup=kb_diary())
+    nav = kb_diary_nav(offset)
+
+    if edit_message is not None:
+        try:
+            await edit_message.edit_text(text, reply_markup=nav)
+            return
+        except Exception:
+            pass
+
+    # Два сообщения: карточка+inline и Reply-клавиатура раздела
+    # (у одного сообщения Telegram не смешивает Reply и Inline).
+    await clear_ui_messages(message, state)
+    card = await message.answer(text, reply_markup=nav)
+    actions = await message.answer("Выберите действие:", reply_markup=kb_diary())
+    await remember_ui_messages(state, card, actions)
 
 
 # Памятка «Распознать» без запуска анализа.
@@ -563,16 +628,18 @@ async def show_recognize(message: Message, state: FSMContext) -> None:
     text = (
         "🔍 Распознать\n"
         "\n"
-        "Отправлять фото или текст можно в любой момент — кнопка не обязательна.\n"
+        "💡 Отправлять фото или текст можно в любой момент — кнопка не обязательна\n"
         "\n"
-        "Что умеет бот:\n"
-        "• оценить блюдо по фото (можно с подписью);\n"
-        "• разобрать текстовое описание / ккал;\n"
-        "• прочитать этикетку с пищевой ценностью.\n"
+        "✨ Что умеет бот:\n"
+        "• 📸 Оценить блюдо по фото (можно с подписью)\n"
+        "• 📝 Разобрать текстовое описание / ккал\n"
+        "• 🏷️ Прочитать этикетку с пищевой ценностью\n"
         "\n"
-        "После оценки появится превью — подтвердите или поправьте результат."
+        "📋 После оценки появится превью — подтвердите или поправьте результат\n"
+        "\n"
+        "🚀 Можешь начинать распознавание прямо сейчас — отправь в чат фото или текст описания еды"
     )
-    await message.answer(text, reply_markup=kb_recognize())
+    await replace_ui(message, state, text, reply_markup=kb_recognize())
 
 
 # Экран настроек (без пункта напоминаний).
@@ -590,7 +657,7 @@ async def show_settings(message: Message, state: FSMContext) -> None:
         f"Цель: {goal_label(user['goal'])}\n"
         f"Норма: {user['daily_calories']} ккал/сутки"
     )
-    await message.answer(text, reply_markup=kb_settings())
+    await replace_ui(message, state, text, reply_markup=kb_settings())
 
 
 # Подменю выбора периода выгрузки.
@@ -598,7 +665,9 @@ async def show_settings(message: Message, state: FSMContext) -> None:
 async def show_export_menu(message: Message, state: FSMContext) -> None:
     await state.set_state(None)
     await state.update_data(menu_screen="export")
-    await message.answer(
+    await replace_ui(
+        message,
+        state,
         "📤 Выгрузка журнала\n"
         "\n"
         "Выберите период. Файл придёт в формате .txt "
@@ -719,7 +788,7 @@ async def on_back(message: Message, state: FSMContext) -> None:
 #endregion
 
 #region Хендлеры: дневник
-# Inline: день раньше.
+# Inline: день раньше — правим карточку дневника на месте.
 @menu_router.callback_query(F.data == CALLBACK_DIARY_PREV)
 async def on_diary_prev(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
@@ -728,20 +797,30 @@ async def on_diary_prev(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     if callback.message:
         await show_diary(
-            callback.message, state, user_id=callback.from_user.id
+            callback.message,
+            state,
+            user_id=callback.from_user.id,
+            edit_message=callback.message,
         )
 
 
-# Inline: день позже.
+# Inline: день позже (только из прошлого; на «сегодня» кнопки нет).
 @menu_router.callback_query(F.data == CALLBACK_DIARY_NEXT)
 async def on_diary_next(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
-    offset = int(data.get("diary_offset", 0)) + 1
+    offset = int(data.get("diary_offset", 0))
+    if offset >= 0:
+        await callback.answer()
+        return
+    offset += 1
     await state.update_data(diary_offset=offset, menu_screen="diary")
     await callback.answer()
     if callback.message:
         await show_diary(
-            callback.message, state, user_id=callback.from_user.id
+            callback.message,
+            state,
+            user_id=callback.from_user.id,
+            edit_message=callback.message,
         )
 
 
@@ -750,7 +829,9 @@ async def on_diary_next(callback: CallbackQuery, state: FSMContext) -> None:
 async def on_add_dish(message: Message, state: FSMContext) -> None:
     await state.update_data(menu_screen="diary")
     await state.set_state(None)
-    await message.answer(
+    await replace_ui(
+        message,
+        state,
         "➕ Добавить блюдо\n"
         "\n"
         "Просто пришлите фото блюда (можно с подписью) или напишите текстом, "
@@ -770,13 +851,17 @@ async def on_edit_dish(message: Message, state: FSMContext) -> None:
     logs = stub_get_food_logs_for_date(user_id, logged_date)
     await state.update_data(menu_screen="diary", pick_logs=[r["id"] for r in logs])
     if not logs:
-        await message.answer(
+        await replace_ui(
+            message,
+            state,
             "За этот день записей нет — менять нечего.",
             reply_markup=kb_diary(),
         )
         return
     await state.set_state(MenuFlow.diary_pick_edit)
-    await message.answer(
+    await replace_ui(
+        message,
+        state,
         "✏️ Изменить блюдо\n"
         "\n"
         "Выберите номер блюда из списка:\n"
@@ -803,7 +888,9 @@ async def on_edit_dish_pick(message: Message, state: FSMContext) -> None:
     log_id = pick_ids[idx - 1]
     await state.set_state(None)
     # 🔰 UPDATE food_logs ... — пока не подключено
-    await message.answer(
+    await replace_ui(
+        message,
+        state,
         f"Выбрано блюдо #{idx} (id={log_id}).\n"
         "✏️ Сохранение изменений в БД скоро — форма редактирования появится позже.",
         reply_markup=kb_diary(),
@@ -821,13 +908,17 @@ async def on_delete_dish(message: Message, state: FSMContext) -> None:
     logs = stub_get_food_logs_for_date(user_id, logged_date)
     await state.update_data(menu_screen="diary", pick_logs=[r["id"] for r in logs])
     if not logs:
-        await message.answer(
+        await replace_ui(
+            message,
+            state,
             "За этот день записей нет — удалять нечего.",
             reply_markup=kb_diary(),
         )
         return
     await state.set_state(MenuFlow.diary_pick_delete)
-    await message.answer(
+    await replace_ui(
+        message,
+        state,
         "🗑 Удалить блюдо\n"
         "\n"
         "Выберите номер блюда из списка:\n"
@@ -853,12 +944,8 @@ async def on_delete_dish_pick(message: Message, state: FSMContext) -> None:
         return
     log_id = pick_ids[idx - 1]
     user_id = message.from_user.id if message.from_user else 0
-    ok = stub_delete_food_log(user_id, log_id)
+    stub_delete_food_log(user_id, log_id)
     await state.set_state(None)
-    if ok:
-        await message.answer(f"🗑 Блюдо #{idx} удалено (🔰 stub).")
-    else:
-        await message.answer("Не удалось удалить запись (🔰 stub).")
     await show_diary(message, state)
 
 
@@ -919,7 +1006,9 @@ async def on_export_week(message: Message, state: FSMContext) -> None:
 async def on_export_month(message: Message, state: FSMContext) -> None:
     await state.set_state(MenuFlow.export_month_pick)
     await state.update_data(menu_screen="export_month")
-    await message.answer(
+    await replace_ui(
+        message,
+        state,
         "🗂 Выгрузка за 30 дней\n"
         "\n"
         "Данные хранятся не дольше 90 дней. Какой период нужен?",
@@ -956,7 +1045,7 @@ async def on_export_month_pick(message: Message, state: FSMContext) -> None:
         f"{title} ({date_from} … {date_to})",
         f"diary_month_{date_from}_{date_to}.txt",
     )
-    await message.answer("Готово.", reply_markup=kb_export())
+    await replace_ui(message, state, "Готово.", reply_markup=kb_export())
 #endregion
 
 #region Хендлеры: настройки
@@ -967,7 +1056,9 @@ async def on_set_day_hour(message: Message, state: FSMContext) -> None:
     user = stub_get_user(user_id)
     await state.set_state(MenuFlow.settings_day_hour)
     await state.update_data(menu_screen="settings")
-    await message.answer(
+    await replace_ui(
+        message,
+        state,
         "🕓 Время смены суток\n"
         "\n"
         f"Сейчас: {user['day_change_hour']:02d}:00 "
@@ -987,7 +1078,9 @@ async def on_set_day_hour_value(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
     stub_set_day_change_hour(user_id, int(text))
     await state.set_state(None)
-    await message.answer(
+    await replace_ui(
+        message,
+        state,
         f"✅ Смена суток установлена на {int(text):02d}:00 (🔰 stub).",
         reply_markup=kb_settings(),
     )
@@ -1005,7 +1098,9 @@ async def on_settings_export(message: Message, state: FSMContext) -> None:
 async def on_feedback_start(message: Message, state: FSMContext) -> None:
     await state.set_state(MenuFlow.feedback_wait)
     await state.update_data(menu_screen="settings")
-    await message.answer(
+    await replace_ui(
+        message,
+        state,
         "💬 Обратная связь\n"
         "\n"
         "Напишите текст отзыва. Можно прикрепить фото "
@@ -1022,7 +1117,9 @@ async def on_feedback_text(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     stub_send_feedback(user_id, text, has_photo=False)
     await state.set_state(None)
-    await message.answer(
+    await replace_ui(
+        message,
+        state,
         "✅ Спасибо! Отзыв передан разработчику (🔰 stub, без email).",
         reply_markup=kb_settings(),
     )
@@ -1035,7 +1132,9 @@ async def on_feedback_photo(message: Message, state: FSMContext) -> None:
     text = (message.caption or "").strip()
     stub_send_feedback(user_id, text or "(без текста)", has_photo=True)
     await state.set_state(None)
-    await message.answer(
+    await replace_ui(
+        message,
+        state,
         "✅ Спасибо! Отзыв передан разработчику (🔰 stub, без email).",
         reply_markup=kb_settings(),
     )
@@ -1046,7 +1145,9 @@ async def on_feedback_photo(message: Message, state: FSMContext) -> None:
 async def on_set_goal(message: Message, state: FSMContext) -> None:
     await state.set_state(MenuFlow.settings_goal)
     await state.update_data(menu_screen="goal")
-    await message.answer(
+    await replace_ui(
+        message,
+        state,
         "🎯 Тип отслеживания\n\nВыберите направление:",
         reply_markup=kb_goal(),
     )
@@ -1060,7 +1161,9 @@ async def on_set_goal_value(message: Message, state: FSMContext) -> None:
     stub_set_goal(user_id, goal)
     await state.set_state(None)
     await state.update_data(menu_screen="settings")
-    await message.answer(
+    await replace_ui(
+        message,
+        state,
         f"✅ Цель: {goal_label(goal)} (🔰 stub).",
         reply_markup=kb_settings(),
     )
@@ -1073,7 +1176,9 @@ async def on_set_calories(message: Message, state: FSMContext) -> None:
     user = stub_get_user(user_id)
     await state.set_state(MenuFlow.settings_calories)
     await state.update_data(menu_screen="settings")
-    await message.answer(
+    await replace_ui(
+        message,
+        state,
         "🔥 Целевые ккал в сутки\n"
         "\n"
         f"Сейчас: {user['daily_calories']} ккал.\n"
@@ -1092,7 +1197,9 @@ async def on_set_calories_value(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
     stub_set_daily_calories(user_id, int(text))
     await state.set_state(None)
-    await message.answer(
+    await replace_ui(
+        message,
+        state,
         f"✅ Норма: {int(text)} ккал/сутки (🔰 stub).",
         reply_markup=kb_settings(),
     )
