@@ -15,11 +15,12 @@ food_recognition.py — FSM-флоу распознавания еды для Nu
 3. FoodFlow (FSM), FoodResult (Pydantic-схема), клиент Gemini, Router.
 4. Анализ через Gemini (_generate_with_fallback, analyze_food_photo/text).
 5. Нормализация и форматирование результата.
-6. Клавиатуры confirm / label / cancel / edit-menu.
+6. Клавиатуры confirm / label / cancel / edit-menu (+ «🏠 Главное меню»).
 7. Утилиты (save_to_console, download_photo_temp, parse_food_result).
 8. Confirm UI (show/finalize/schedule/handle_ai_result).
 9. Хендлеры: фото, подсказка, вес, текст, callbacks, меню правок.
-10. setup_food_recognition — MemoryStorage + тексты кнопок меню; возвращает router.
+10. setup_food_recognition — MemoryStorage + тексты меню / «🏠»; возвращает router.
+    Reply «🏠» скрыта с отправки фото/текста до ✅ или отмены после «✏️ Изменить».
 """
 
 from __future__ import annotations
@@ -132,6 +133,9 @@ _storage: MemoryStorage | None = None
 
 # Тексты кнопок главного меню (из main.py) — не отправлять в Gemini как описание еды.
 _menu_button_texts: frozenset[str] = frozenset()
+
+# Текст «🏠 Главное меню» из main.py — скрываем на время анализа/confirm, показываем в «✏️ Изменить».
+_main_menu_button_text: str | None = None
 
 
 # Фильтр: текст сообщения не является кнопкой главного меню (проверка на runtime).
@@ -379,19 +383,64 @@ def build_cancel_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-# Reply-клавиатура меню правок после нажатия «✏️ Изменить».
+# Reply-клавиатура только с «🏠 Главное меню» (после ✅ / отмены или вместо Remove).
+# Используется при завершении флоу и во вводах после меню «✏️ Изменить».
+def build_main_menu_only_keyboard() -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
+    if not _main_menu_button_text:
+        return ReplyKeyboardRemove()
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=_main_menu_button_text)]],
+        resize_keyboard=True,
+    )
+
+
+# Reply-клавиатура меню правок после нажатия «✏️ Изменить» (+ «🏠 Главное меню»).
 # Используется в on_edit → FoodFlow.editing_choice.
 def build_edit_menu_keyboard() -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = [
+        [KeyboardButton(text=BTN_EDIT_WEIGHT)],
+        [KeyboardButton(text=BTN_EDIT_HINT)],
+        [KeyboardButton(text=BTN_EDIT_REPLACE)],
+        [KeyboardButton(text=BTN_EDIT_DISCARD)],
+    ]
+    if _main_menu_button_text:
+        rows.append([KeyboardButton(text=_main_menu_button_text)])
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=BTN_EDIT_WEIGHT)],
-            [KeyboardButton(text=BTN_EDIT_HINT)],
-            [KeyboardButton(text=BTN_EDIT_REPLACE)],
-            [KeyboardButton(text=BTN_EDIT_DISCARD)],
-        ],
+        keyboard=rows,
         resize_keyboard=True,
         one_time_keyboard=True,
     )
+
+
+# Скрывает Reply-клавиатуру отдельным сообщением и сразу удаляет его.
+# Нельзя вешать ReplyKeyboardRemove на статус «Анализирую…»: Telegram запрещает edit такого сообщения.
+# Используется перед статусом анализа (фото/текст/уточнение).
+async def hide_reply_keyboard(message: Message) -> None:
+    try:
+        stub = await message.answer("\u2060", reply_markup=ReplyKeyboardRemove())
+        await stub.delete()
+    except Exception:
+        pass
+
+
+# Завершает статус-сообщение текстом и при необходимости возвращает «🏠 Главное меню».
+# Используется в ветках no_food / bad_desc / ошибках анализа (ReplyKeyboard — только новым сообщением).
+async def end_with_status_text(
+    message: Message,
+    text: str,
+    *,
+    status_message: Message | None = None,
+    restore_main_menu: bool = True,
+) -> Message:
+    markup: ReplyKeyboardMarkup | ReplyKeyboardRemove = (
+        build_main_menu_only_keyboard() if restore_main_menu else ReplyKeyboardRemove()
+    )
+    if status_message is not None:
+        try:
+            await status_message.delete()
+        except Exception:
+            pass
+    return await message.answer(text, reply_markup=markup)
 #endregion
 
 #region Утилиты
@@ -488,7 +537,9 @@ async def schedule_auto_confirm(
     await finalize_confirmed_preview(
         result, bot=bot, chat_id=chat_id, message_id=preview_message_id
     )
-    await bot.send_message(chat_id, "Учтено ✅")
+    await bot.send_message(
+        chat_id, "Учтено ✅", reply_markup=build_main_menu_only_keyboard()
+    )
 
 
 # Показывает превью КБЖУ, ставит FSM confirming и запускает таймер 10с.
@@ -510,11 +561,15 @@ async def show_confirm_preview(
 
     token = uuid.uuid4().hex
     text = ensure_min_message_width(format_food_result(result))
+    preview: Message | None = None
     if edit_message is not None:
-        preview = await edit_message.edit_text(
-            text, reply_markup=keyboard, parse_mode="HTML"
-        )
-    else:
+        try:
+            preview = await edit_message.edit_text(
+                text, reply_markup=keyboard, parse_mode="HTML"
+            )
+        except Exception:
+            preview = None
+    if preview is None:
         preview = await message.answer(
             text, reply_markup=keyboard, parse_mode="HTML"
         )
@@ -549,24 +604,23 @@ async def handle_ai_result(
     status_message: Message | None = None,
 ) -> None:
     if result.status == "no_food":
-        text = "Еда на фото не обнаружена"
-        if status_message is not None:
-            await status_message.edit_text(text)
-        else:
-            await message.answer(text)
+        await end_with_status_text(
+            message, "Еда на фото не обнаружена", status_message=status_message
+        )
         await state.clear()
         return
 
     if result.status == "bad_desc":
-        text = "Не поняли описание. Сфотографируйте еду заново"
-        if status_message is not None:
-            await status_message.edit_text(text)
-        else:
-            await message.answer(text)
+        await end_with_status_text(
+            message,
+            "Не поняли описание. Сфотографируйте еду заново",
+            status_message=status_message,
+        )
         await state.clear()
         return
 
     if result.status == "unclear":
+        # Клавиатуру не возвращаем — пользователь ещё в флоу до confirm/отмены.
         ask = (
             "На фото похоже на еду, но не удалось точно распознать.\n"
             "Опишите текстом, что за еда на фото — или нажмите «Отмена»"
@@ -574,18 +628,21 @@ async def handle_ai_result(
         if status_message is not None:
             await status_message.edit_text(ask, reply_markup=build_cancel_keyboard())
         else:
-            await message.answer(ask, reply_markup=build_cancel_keyboard())
+            await message.answer(
+                ask,
+                reply_markup=build_cancel_keyboard(),
+            )
         await state.set_state(FoodFlow.waiting_hint)
         await state.update_data(file_id=file_id, result=None, confirm_token=None)
         return
 
     if result.status in ("recognized", "label"):
         if result.calories is None:
-            text = "Не удалось оценить калорийность. Попробуйте другое фото или уточните текстом"
-            if status_message is not None:
-                await status_message.edit_text(text)
-            else:
-                await message.answer(text)
+            await end_with_status_text(
+                message,
+                "Не удалось оценить калорийность. Попробуйте другое фото или уточните текстом",
+                status_message=status_message,
+            )
             await state.clear()
             return
         await show_confirm_preview(
@@ -598,11 +655,11 @@ async def handle_ai_result(
         )
         return
 
-    text = "Не удалось обработать результат. Попробуйте ещё раз"
-    if status_message is not None:
-        await status_message.edit_text(text)
-    else:
-        await message.answer(text)
+    await end_with_status_text(
+        message,
+        "Не удалось обработать результат. Попробуйте ещё раз",
+        status_message=status_message,
+    )
     await state.clear()
 #endregion
 
@@ -612,6 +669,8 @@ async def handle_ai_result(
 @router.message(F.photo)
 async def on_photo(message: Message, state: FSMContext, bot: Bot) -> None:
     await state.clear()
+    # Скрываем «🏠» отдельно: статус должен оставаться editable для превью.
+    await hide_reply_keyboard(message)
     status_msg = await message.answer("✨ Анализирую фото…")
     photo = message.photo[-1]
     file_id = photo.file_id
@@ -623,9 +682,11 @@ async def on_photo(message: Message, state: FSMContext, bot: Bot) -> None:
         raw = await asyncio.to_thread(analyze_food_photo, str(temp_path), hint)
         result = parse_food_result(raw)
         if result is None:
-            await status_msg.edit_text(
+            await end_with_status_text(
+                message,
                 "Не удалось проанализировать фото: модели сейчас недоступны "
-                "или ответ не разобран. Попробуй ещё раз чуть позже"
+                "или ответ не разобран. Попробуй ещё раз чуть позже",
+                status_message=status_msg,
             )
             return
         await handle_ai_result(
@@ -638,7 +699,11 @@ async def on_photo(message: Message, state: FSMContext, bot: Bot) -> None:
         )
     except Exception as e:
         print(f"Ошибка при обработке фото: {e}")
-        await status_msg.edit_text("Произошла ошибка при обработке фото. Попробуй ещё раз")
+        await end_with_status_text(
+            message,
+            "Произошла ошибка при обработке фото. Попробуй ещё раз",
+            status_message=status_msg,
+        )
         await state.clear()
     finally:
         if temp_path is not None and temp_path.exists():
@@ -667,14 +732,17 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
             if prev_dish
             else hint
         )
+        await hide_reply_keyboard(message)
         status_msg = await message.answer("Уточняю по вашей подсказке…")
         try:
             raw = await asyncio.to_thread(analyze_food_text, query)
             result = parse_food_result(raw)
             if result is None:
-                await status_msg.edit_text(
+                await end_with_status_text(
+                    message,
                     "Не удалось уточнить результат. Попробуйте другое описание "
-                    "или пришлите фото"
+                    "или пришлите фото",
+                    status_message=status_msg,
                 )
                 return
             if result.status == "label":
@@ -691,9 +759,14 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
             )
         except Exception as e:
             print(f"Ошибка при уточнении текстового результата: {e}")
-            await status_msg.edit_text("Ошибка при уточнении. Попробуйте ещё раз")
+            await end_with_status_text(
+                message,
+                "Ошибка при уточнении. Попробуйте ещё раз",
+                status_message=status_msg,
+            )
         return
 
+    await hide_reply_keyboard(message)
     status_msg = await message.answer("Уточняю по вашей подсказке…")
     temp_path: Path | None = None
     try:
@@ -701,8 +774,10 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
         raw = await asyncio.to_thread(analyze_food_photo, str(temp_path), hint)
         result = parse_food_result(raw)
         if result is None:
-            await status_msg.edit_text(
-                "Не удалось уточнить результат. Попробуйте другое описание или новое фото"
+            await end_with_status_text(
+                message,
+                "Не удалось уточнить результат. Попробуйте другое описание или новое фото",
+                status_message=status_msg,
             )
             return
         await handle_ai_result(
@@ -715,7 +790,11 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
         )
     except Exception as e:
         print(f"Ошибка при уточнении по подсказке: {e}")
-        await status_msg.edit_text("Ошибка при уточнении. Попробуйте ещё раз")
+        await end_with_status_text(
+            message,
+            "Ошибка при уточнении. Попробуйте ещё раз",
+            status_message=status_msg,
+        )
     finally:
         if temp_path is not None and temp_path.exists():
             temp_path.unlink(missing_ok=True)
@@ -749,7 +828,7 @@ async def on_weight_text(message: Message, state: FSMContext) -> None:
     await message.answer(
         f"{format_food_result(updated)}\n\nУчтено ✅ (с пересчётом на {weight:g} г)",
         parse_mode="HTML",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=build_main_menu_only_keyboard(),
     )
 #endregion
 
@@ -770,30 +849,42 @@ async def on_text_food(message: Message, state: FSMContext, bot: Bot) -> None:
         await message.answer("Напишите, что съели, или сколько ккал — либо пришлите фото")
         return
 
+    # Скрываем «🏠» отдельно: статус должен оставаться editable для превью.
+    await hide_reply_keyboard(message)
     status_msg = await message.answer("✨ Анализирую описание…")
     try:
         raw = await asyncio.to_thread(analyze_food_text, text)
         result = parse_food_result(raw)
         if result is None:
-            await status_msg.edit_text(
+            await end_with_status_text(
+                message,
                 "Не удалось разобрать описание. Попробуйте сформулировать иначе "
-                "или пришлите фото"
+                "или пришлите фото",
+                status_message=status_msg,
             )
             return
         # Для чистого текста unclear/bad_desc обрабатываем мягче.
         if result.status == "unclear":
-            await status_msg.edit_text(
+            await end_with_status_text(
+                message,
                 "Не хватило данных для оценки. Уточните блюдо и порцию "
-                "или пришлите фото"
+                "или пришлите фото",
+                status_message=status_msg,
             )
             return
         if result.status == "bad_desc":
-            await status_msg.edit_text(
-                "Не поняли описание. Напишите иначе или пришлите фото еды"
+            await end_with_status_text(
+                message,
+                "Не поняли описание. Напишите иначе или пришлите фото еды",
+                status_message=status_msg,
             )
             return
         if result.status == "no_food":
-            await status_msg.edit_text("По этому тексту еду учесть не удалось")
+            await end_with_status_text(
+                message,
+                "По этому тексту еду учесть не удалось",
+                status_message=status_msg,
+            )
             return
         if result.status == "label":
             result = result.model_copy(update={"status": "recognized", "is_label": False})
@@ -807,7 +898,11 @@ async def on_text_food(message: Message, state: FSMContext, bot: Bot) -> None:
         )
     except Exception as e:
         print(f"Ошибка при обработке текста: {e}")
-        await status_msg.edit_text("Произошла ошибка при обработке текста. Попробуй ещё раз")
+        await end_with_status_text(
+            message,
+            "Произошла ошибка при обработке текста. Попробуй ещё раз",
+            status_message=status_msg,
+        )
         await state.clear()
 #endregion
 
@@ -820,7 +915,10 @@ async def on_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     result_data = data.get("result")
     if not result_data:
-        await callback.message.answer("Нечего подтверждать. Пришлите фото или текст заново")
+        await callback.message.answer(
+            "Нечего подтверждать. Пришлите фото или текст заново",
+            reply_markup=build_main_menu_only_keyboard(),
+        )
         await state.clear()
         return
 
@@ -830,17 +928,22 @@ async def on_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     save_to_console(result)
     await state.clear()
     await finalize_confirmed_preview(result, message=callback.message)
-    await callback.message.answer("Учтено ✅")
+    await callback.message.answer(
+        "Учтено ✅", reply_markup=build_main_menu_only_keyboard()
+    )
 
 
-# Callback ✏️: показывает меню правок с reply-клавиатурой.
+# Callback ✏️: показывает меню правок с reply-клавиатурой (+ «🏠 Главное меню»).
 # Регистрируется на router через декоратор.
 @router.callback_query(F.data == CALLBACK_EDIT)
 async def on_edit(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     data = await state.get_data()
     if not data.get("result"):
-        await callback.message.answer("Нечего менять. Пришлите фото или текст заново")
+        await callback.message.answer(
+            "Нечего менять. Пришлите фото или текст заново",
+            reply_markup=build_main_menu_only_keyboard(),
+        )
         await state.clear()
         return
 
@@ -866,7 +969,7 @@ async def on_edit_weight(message: Message, state: FSMContext) -> None:
     if not data.get("result"):
         await message.answer(
             "Данные потеряны. Пришлите фото или описание заново",
-            reply_markup=ReplyKeyboardRemove(),
+            reply_markup=build_main_menu_only_keyboard(),
         )
         await state.clear()
         return
@@ -874,7 +977,7 @@ async def on_edit_weight(message: Message, state: FSMContext) -> None:
     await state.set_state(FoodFlow.waiting_weight)
     await message.answer(
         "Введите вес порции в граммах (например: 150)",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=build_main_menu_only_keyboard(),
     )
 
 
@@ -886,7 +989,7 @@ async def on_edit_hint(message: Message, state: FSMContext) -> None:
     if not data.get("result") and not data.get("file_id"):
         await message.answer(
             "Данные потеряны. Пришлите фото или описание заново",
-            reply_markup=ReplyKeyboardRemove(),
+            reply_markup=build_main_menu_only_keyboard(),
         )
         await state.clear()
         return
@@ -894,7 +997,7 @@ async def on_edit_hint(message: Message, state: FSMContext) -> None:
     await state.set_state(FoodFlow.waiting_hint)
     await message.answer(
         "Дополните или уточните описание блюда текстом",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=build_main_menu_only_keyboard(),
     )
     await message.answer(
         "Если передумали — нажмите «Отмена»",
@@ -910,7 +1013,7 @@ async def on_edit_replace(message: Message, state: FSMContext) -> None:
     await message.answer(
         "Хорошо. Пришлите новое фото или текстовое описание — "
         "распознаем заново",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=build_main_menu_only_keyboard(),
     )
 
 
@@ -921,7 +1024,7 @@ async def on_edit_discard(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         "Хорошо, результат не сохранён в дневник",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=build_main_menu_only_keyboard(),
     )
 
 
@@ -968,19 +1071,21 @@ async def on_cancel(callback: CallbackQuery, state: FSMContext) -> None:
         pass
     await callback.message.answer(
         "Отменено. Можете прислать новое фото или текстовое описание",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=build_main_menu_only_keyboard(),
     )
 #endregion
 
 #region Setup
-# Подключает MemoryStorage и набор текстов кнопок меню; возвращает router модуля.
-# Используется в main.py: setup_food_recognition(storage, menu_button_texts=...).
+# Подключает MemoryStorage, тексты кнопок меню и «🏠 Главное меню»; возвращает router.
+# Используется в main.py: setup_food_recognition(storage, menu_button_texts=..., ...).
 def setup_food_recognition(
     storage: MemoryStorage,
     menu_button_texts: frozenset[str] | None = None,
+    main_menu_button_text: str | None = None,
 ) -> Router:
-    global _storage, _menu_button_texts
+    global _storage, _menu_button_texts, _main_menu_button_text
     _storage = storage
     _menu_button_texts = menu_button_texts or frozenset()
+    _main_menu_button_text = main_menu_button_text
     return router
 #endregion

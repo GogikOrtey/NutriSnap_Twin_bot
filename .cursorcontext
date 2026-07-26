@@ -60,7 +60,7 @@ main.py
 
   ├── include_router(menu_router)          # Reply-меню, дневник, настройки, выгрузка
 
-  └── include_router(setup_food_recognition(storage, menu_button_texts=...))
+  └── include_router(setup_food_recognition(storage, menu_button_texts=..., main_menu_button_text=...))
 
         └── food_recognition.py (Router: фото/текст/callbacks/FSM)
 
@@ -130,13 +130,15 @@ main.py
 
 - Превью с ✏️/✅ добивается до `MIN_CONFIRM_MSG_WIDTH=30` (`WIDTH_PAD_CHAR=⠀`); после ✅/`finalize_confirmed_preview` — обычная ширина без паддинга.
 
-- ✏️ → reply-меню (`editing_choice`): вес порции / дополнить описание / заменить ввод / не сохранять.
+- ✏️ → reply-меню (`editing_choice`): вес порции / дополнить описание / заменить ввод / не сохранять / «🏠 Главное меню».
+
+- Reply «🏠 Главное меню»: скрывается с отправки фото/текста (`hide_reply_keyboard` — отдельное сообщение с `ReplyKeyboardRemove`, сразу удаляется) и на протяжении confirming; снова появляется в меню «✏️ Изменить», после ✅ / авто-✅ / «❌ Не сохранять» / «Отмена» / ошибок анализа. Нельзя вешать `ReplyKeyboardRemove` на статус «Анализирую…» — Telegram запрещает `edit` таких сообщений.
 
 - Этикетка без объёма → `portion_g = 100`; ⚖️ или «Изменить вес» → пропорциональный пересчёт КБЖУ.
 
 - «Сохранение»: `save_to_console` (print JSON). Реальная запись в `food_logs` — не реализована.
 
-- Подключение: `setup_food_recognition(storage, menu_button_texts=MENU_BUTTON_TEXTS)` → `Router`.
+- Подключение: `setup_food_recognition(storage, menu_button_texts=MENU_BUTTON_TEXTS, main_menu_button_text=BTN_MAIN_MENU)` → `Router`.
 
 
 

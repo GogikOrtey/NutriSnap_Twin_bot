@@ -722,7 +722,13 @@ menu_router = Router(name="main_menu")
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 dp.include_router(menu_router)
-dp.include_router(setup_food_recognition(storage, menu_button_texts=MENU_BUTTON_TEXTS))
+dp.include_router(
+    setup_food_recognition(
+        storage,
+        menu_button_texts=MENU_BUTTON_TEXTS,
+        main_menu_button_text=BTN_MAIN_MENU,
+    )
+)
 #endregion
 
 #region Хендлеры: корень и навигация
