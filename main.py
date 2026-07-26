@@ -56,13 +56,17 @@ BTN_DIARY = "📒 Дневник питания"
 BTN_RECOGNIZE = "🔍 Распознать"
 BTN_SETTINGS = "⚙️ Настройки"
 
-BTN_ADD_DISH = "➕ Добавить блюдо"
+BTN_ADD_DISH = "🟩 Добавить блюдо"
 BTN_EDIT_DISH = "✏️ Изменить блюдо"
 BTN_DELETE_DISH = "🗑 Удалить блюдо"
 # Устарело: раньше вело к выгрузке из дневника; оставлено в MENU_BUTTON_TEXTS
 # на случай старой reply-клавиатуры у клиента (не слать в Gemini).
 BTN_EXTRA = "📎 Дополнительно"
 BTN_BACK = "⬅️ Назад"
+# Пагинация номеров блюд в флоу изменить/удалить (по 10 на страницу).
+BTN_PICK_PAGE_NEXT = "▶️ Далее"
+BTN_PICK_PAGE_PREV = "◀️ Ранее"
+PICK_PAGE_SIZE = 10
 
 BTN_EXPORT_TODAY = "📅 Текущий день"
 BTN_EXPORT_YESTERDAY = "📆 Прошлый день"
@@ -123,6 +127,8 @@ MENU_BUTTON_TEXTS: frozenset[str] = frozenset(
         BTN_DELETE_DISH,
         BTN_EXTRA,
         BTN_BACK,
+        BTN_PICK_PAGE_NEXT,
+        BTN_PICK_PAGE_PREV,
         BTN_EXPORT_TODAY,
         BTN_EXPORT_YESTERDAY,
         BTN_EXPORT_WEEK,
@@ -473,6 +479,74 @@ def kb_diary() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
         ],
         resize_keyboard=True,
+    )
+
+
+# Reply-клавиатура выбора номера блюда: узкие кнопки 1…N по 10 на страницу + «Назад».
+# Используется флоу «Изменить блюдо» / «Удалить блюдо».
+def kb_pick_dish(total: int, page: int = 0) -> ReplyKeyboardMarkup:
+    if total <= 0:
+        return ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=BTN_BACK)]],
+            resize_keyboard=True,
+        )
+    max_page = max(0, (total - 1) // PICK_PAGE_SIZE)
+    page = max(0, min(page, max_page))
+    start = page * PICK_PAGE_SIZE + 1
+    end = min(total, (page + 1) * PICK_PAGE_SIZE)
+
+    rows: list[list[KeyboardButton]] = []
+    row: list[KeyboardButton] = []
+    for n in range(start, end + 1):
+        row.append(KeyboardButton(text=str(n)))
+        # По 5 в ряд — кнопки уже, чем полный ряд дневника.
+        if len(row) == 5:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+
+    nav: list[KeyboardButton] = []
+    if page > 0:
+        nav.append(KeyboardButton(text=BTN_PICK_PAGE_PREV))
+    if page < max_page:
+        nav.append(KeyboardButton(text=BTN_PICK_PAGE_NEXT))
+    if nav:
+        rows.append(nav)
+
+    rows.append([KeyboardButton(text=BTN_BACK)])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+# Текст экрана выбора блюда (edit/delete) с учётом текущей страницы номеров.
+# Используется стартом флоу и перелистыванием страниц кнопок.
+def format_dish_pick_prompt(
+    *,
+    mode: str,
+    user: dict[str, Any],
+    logs: list[dict[str, Any]],
+    page: int,
+) -> str:
+    total = len(logs)
+    max_page = max(0, (total - 1) // PICK_PAGE_SIZE) if total else 0
+    page = max(0, min(page, max_page))
+    start = page * PICK_PAGE_SIZE + 1
+    end = min(total, (page + 1) * PICK_PAGE_SIZE)
+    title = "✏️ Изменить блюдо" if mode == "edit" else "🗑 Удалить блюдо"
+    page_hint = ""
+    if total > PICK_PAGE_SIZE:
+        page_hint = (
+            f"\nКнопки на экране: {start}–{end} "
+            f"(стр. {page + 1}/{max_page + 1})."
+        )
+    return (
+        f"{title}\n"
+        "\n"
+        "Выберите номер блюда кнопкой:\n"
+        f"{format_numbered_logs(user, logs)}"
+        f"{page_hint}\n"
+        "\n"
+        "Или нажмите «⬅️ Назад»."
     )
 
 
@@ -886,7 +960,7 @@ async def send_export_file(
     document = BufferedInputFile(content.encode("utf-8"), filename=filename)
     await message.answer_document(
         document,
-        caption=f"Выгрузка: {period_title}",
+        caption=f"Выгрузка: {period_title}\n\nВ начало документа добавлены ваши характеристики и простой промпт для запуска анализа - так весь документ можно вставить в ChatGPT и он даст рекомендации по улучшению питания",
     )
 #endregion
 
@@ -1044,7 +1118,7 @@ async def on_add_dish(message: Message, state: FSMContext) -> None:
     )
 
 
-# Старт «Изменить блюдо»: список номеров → ожидание номера.
+# Старт «Изменить блюдо»: reply-кнопки с номерами → ожидание выбора.
 @menu_router.message(F.text == BTN_EDIT_DISH)
 async def on_edit_dish(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
@@ -1053,7 +1127,11 @@ async def on_edit_dish(message: Message, state: FSMContext) -> None:
     offset = int(data.get("diary_offset", 0))
     logged_date = logical_date_with_offset(user, offset)
     logs = stub_get_food_logs_for_date(user_id, logged_date)
-    await state.update_data(menu_screen="diary", pick_logs=[r["id"] for r in logs])
+    await state.update_data(
+        menu_screen="diary",
+        pick_logs=[r["id"] for r in logs],
+        pick_page=0,
+    )
     if not logs:
         await replace_ui(
             message,
@@ -1066,13 +1144,8 @@ async def on_edit_dish(message: Message, state: FSMContext) -> None:
     await replace_ui(
         message,
         state,
-        "✏️ Изменить блюдо\n"
-        "\n"
-        "Выберите номер блюда из списка:\n"
-        f"{format_numbered_logs(user, logs)}\n"
-        "\n"
-        "Отправьте номер сообщением (или «⬅️ Назад»).",
-        reply_markup=kb_diary(),
+        format_dish_pick_prompt(mode="edit", user=user, logs=logs, page=0),
+        reply_markup=kb_pick_dish(len(logs), page=0),
     )
 
 
@@ -1083,7 +1156,7 @@ async def on_edit_dish_pick(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     pick_ids: list[int] = list(data.get("pick_logs") or [])
     if not text.isdigit():
-        await message.answer("Введите номер блюда из списка (число).")
+        await message.answer("Выберите номер блюда кнопкой на клавиатуре.")
         return
     idx = int(text)
     if idx < 1 or idx > len(pick_ids):
@@ -1101,7 +1174,7 @@ async def on_edit_dish_pick(message: Message, state: FSMContext) -> None:
     )
 
 
-# Старт «Удалить блюдо»: список номеров → ожидание номера.
+# Старт «Удалить блюдо»: reply-кнопки с номерами → ожидание выбора.
 @menu_router.message(F.text == BTN_DELETE_DISH)
 async def on_delete_dish(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
@@ -1110,7 +1183,11 @@ async def on_delete_dish(message: Message, state: FSMContext) -> None:
     offset = int(data.get("diary_offset", 0))
     logged_date = logical_date_with_offset(user, offset)
     logs = stub_get_food_logs_for_date(user_id, logged_date)
-    await state.update_data(menu_screen="diary", pick_logs=[r["id"] for r in logs])
+    await state.update_data(
+        menu_screen="diary",
+        pick_logs=[r["id"] for r in logs],
+        pick_page=0,
+    )
     if not logs:
         await replace_ui(
             message,
@@ -1123,13 +1200,8 @@ async def on_delete_dish(message: Message, state: FSMContext) -> None:
     await replace_ui(
         message,
         state,
-        "🗑 Удалить блюдо\n"
-        "\n"
-        "Выберите номер блюда из списка:\n"
-        f"{format_numbered_logs(user, logs)}\n"
-        "\n"
-        "Отправьте номер сообщением (или «⬅️ Назад»).",
-        reply_markup=kb_diary(),
+        format_dish_pick_prompt(mode="delete", user=user, logs=logs, page=0),
+        reply_markup=kb_pick_dish(len(logs), page=0),
     )
 
 
@@ -1140,7 +1212,7 @@ async def on_delete_dish_pick(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     pick_ids: list[int] = list(data.get("pick_logs") or [])
     if not text.isdigit():
-        await message.answer("Введите номер блюда из списка (число).")
+        await message.answer("Выберите номер блюда кнопкой на клавиатуре.")
         return
     idx = int(text)
     if idx < 1 or idx > len(pick_ids):
@@ -1151,6 +1223,53 @@ async def on_delete_dish_pick(message: Message, state: FSMContext) -> None:
     stub_delete_food_log(user_id, log_id)
     await state.set_state(None)
     await show_diary(message, state)
+
+
+# Перелистывание страницы номеров блюд (Далее / Ранее) в флоу изменить/удалить.
+@menu_router.message(
+    MenuFlow.diary_pick_edit,
+    F.text.in_({BTN_PICK_PAGE_NEXT, BTN_PICK_PAGE_PREV}),
+)
+@menu_router.message(
+    MenuFlow.diary_pick_delete,
+    F.text.in_({BTN_PICK_PAGE_NEXT, BTN_PICK_PAGE_PREV}),
+)
+async def on_dish_pick_page(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    pick_ids: list[int] = list(data.get("pick_logs") or [])
+    total = len(pick_ids)
+    if total <= 0:
+        await show_diary(message, state)
+        return
+    max_page = max(0, (total - 1) // PICK_PAGE_SIZE)
+    page = int(data.get("pick_page", 0))
+    if message.text == BTN_PICK_PAGE_NEXT:
+        page = min(max_page, page + 1)
+    else:
+        page = max(0, page - 1)
+    await state.update_data(pick_page=page)
+
+    user_id = message.from_user.id if message.from_user else 0
+    user = stub_get_user(user_id)
+    offset = int(data.get("diary_offset", 0))
+    logged_date = logical_date_with_offset(user, offset)
+    logs = stub_get_food_logs_for_date(user_id, logged_date)
+    # Сохраняем порядок/состав pick_logs; для текста берём актуальные записи по id.
+    id_to_log = {r["id"]: r for r in logs}
+    ordered = [id_to_log[i] for i in pick_ids if i in id_to_log]
+    if len(ordered) != total:
+        ordered = logs
+        await state.update_data(pick_logs=[r["id"] for r in ordered])
+        total = len(ordered)
+
+    current = await state.get_state()
+    mode = "edit" if current == MenuFlow.diary_pick_edit.state else "delete"
+    await replace_ui(
+        message,
+        state,
+        format_dish_pick_prompt(mode=mode, user=user, logs=ordered, page=page),
+        reply_markup=kb_pick_dish(total, page=page),
+    )
 
 
 #endregion
