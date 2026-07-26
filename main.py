@@ -82,6 +82,8 @@ BTN_SET_GOAL = "🎯 Изменить тип отслеживания"
 BTN_SET_CALORIES = "🔥 Целевые ккал в сутки"
 BTN_CONFIRM_UPDATE_YES = "✅ Да, запустить опрос"
 BTN_CONFIRM_UPDATE_NO = "❌ Нет, отмена"
+BTN_CONFIRM_RECALC_YES = "✅ Да, пересчитать ккал"
+BTN_CONFIRM_RECALC_NO = "❌ Нет, оставить как есть"
 
 BTN_GOAL_LOSS = "📉 Похудение"
 BTN_GOAL_GAIN = "📈 Набор веса"
@@ -137,6 +139,8 @@ MENU_BUTTON_TEXTS: frozenset[str] = frozenset(
         BTN_SET_CALORIES,
         BTN_CONFIRM_UPDATE_YES,
         BTN_CONFIRM_UPDATE_NO,
+        BTN_CONFIRM_RECALC_YES,
+        BTN_CONFIRM_RECALC_NO,
         BTN_GOAL_LOSS,
         BTN_GOAL_GAIN,
         BTN_GOAL_MAINTAIN,
@@ -153,6 +157,7 @@ class MenuFlow(StatesGroup):
     settings_day_hour = State()
     settings_calories = State()
     settings_goal = State()
+    settings_goal_recalc = State()
     feedback_wait = State()
     export_month_pick = State()
 #endregion
@@ -565,6 +570,19 @@ def kb_goal() -> ReplyKeyboardMarkup:
     )
 
 
+# Reply-клавиатура: пересчитать целевые ккал после смены типа отслеживания?
+# Используется флоу settings_goal → settings_goal_recalc.
+def kb_confirm_recalc_calories() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_CONFIRM_RECALC_YES)],
+            [KeyboardButton(text=BTN_CONFIRM_RECALC_NO)],
+            [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
+        ],
+        resize_keyboard=True,
+    )
+
+
 # Inline «Вчера / Завтра» под сообщением дневника.
 # «Завтра» скрыта на текущем дне (offset >= 0), чтобы не уходить в будущее.
 # Используется show_diary.
@@ -940,6 +958,7 @@ async def on_back(message: Message, state: FSMContext) -> None:
     if current in (
         MenuFlow.settings_calories.state,
         MenuFlow.settings_goal.state,
+        MenuFlow.settings_goal_recalc.state,
     ):
         await show_profile(message, state)
         return
@@ -961,6 +980,9 @@ async def on_back(message: Message, state: FSMContext) -> None:
             await show_main_menu(message, state)
         return
     if screen == "profile_confirm":
+        await show_profile(message, state)
+        return
+    if screen == "profile_goal_recalc":
         await show_profile(message, state)
         return
     if screen == "profile":
@@ -1371,25 +1393,71 @@ async def on_feedback_photo(message: Message, state: FSMContext) -> None:
     )
 
 
-# Выбор типа отслеживания — показать кнопки целей (из экрана профиля).
+# Выбор типа отслеживания — показать текущий тип и кнопки целей (из экрана профиля).
 @menu_router.message(F.text == BTN_SET_GOAL)
 async def on_set_goal(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.id if message.from_user else 0
+    user = stub_get_user(user_id)
     await state.set_state(MenuFlow.settings_goal)
     await state.update_data(menu_screen="profile")
     await replace_ui(
         message,
         state,
-        "🎯 Тип отслеживания\n\nВыберите направление:",
+        "🎯 Тип отслеживания\n"
+        "\n"
+        f"Сейчас: {goal_label(user.get('goal', ''))}.\n"
+        "\n"
+        "Выберите направление:",
         reply_markup=kb_goal(),
     )
 
 
-# Сохранение goal (🔰) → обновлённая сводка профиля.
+# Сохранение goal (🔰). Если тип изменился — спросить про пересчёт целевых ккал.
 @menu_router.message(MenuFlow.settings_goal, F.text.in_(set(GOAL_BY_BTN)))
 async def on_set_goal_value(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    goal = GOAL_BY_BTN[message.text or ""]
-    stub_set_goal(user_id, goal)
+    user = stub_get_user(user_id)
+    old_goal = user.get("goal", "")
+    new_goal = GOAL_BY_BTN[message.text or ""]
+
+    if new_goal == old_goal:
+        await show_profile(message, state)
+        return
+
+    stub_set_goal(user_id, new_goal)
+    await state.set_state(MenuFlow.settings_goal_recalc)
+    await state.update_data(menu_screen="profile_goal_recalc")
+    await replace_ui(
+        message,
+        state,
+        "✅ Данные успешно обновлены.\n"
+        "\n"
+        f"Тип отслеживания: {goal_label(old_goal)} → {goal_label(new_goal)}.\n"
+        "\n"
+        "Пересчитать целевое количество ккал в сутки под новый тип отслеживания?",
+        reply_markup=kb_confirm_recalc_calories(),
+    )
+
+
+# Согласие на пересчёт ккал после смены типа → заглушка (формулу подключим позже).
+@menu_router.message(MenuFlow.settings_goal_recalc, F.text == BTN_CONFIRM_RECALC_YES)
+async def on_goal_recalc_yes(message: Message, state: FSMContext) -> None:
+    await state.set_state(None)
+    await state.update_data(menu_screen="profile")
+    await replace_ui(
+        message,
+        state,
+        "🔜 Пересчёт целевых ккал…\n"
+        "\n"
+        "Заглушка: формулу пересчёта подключим позже. "
+        "Сейчас вы остаётесь в разделе данных профиля.",
+        reply_markup=kb_profile(),
+    )
+
+
+# Отказ от пересчёта ккал после смены типа → назад к сводке профиля.
+@menu_router.message(MenuFlow.settings_goal_recalc, F.text == BTN_CONFIRM_RECALC_NO)
+async def on_goal_recalc_no(message: Message, state: FSMContext) -> None:
     await show_profile(message, state)
 
 
