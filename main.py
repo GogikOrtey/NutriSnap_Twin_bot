@@ -509,9 +509,9 @@ def kb_diary_nav(offset: int = 0) -> InlineKeyboardMarkup:
 #endregion
 
 #region UI: экраны меню
-# Reply-кнопки → всегда новое сообщение (edit путает).
+# Reply-кнопки → новое сообщение; если есть «Выберите действие:» — правим его в новый
+# экран (как «✨ Анализирую…» → превью), без delete и анимации пыли.
 # Inline под карточкой дневника → edit_text.
-# «Выберите действие:» — служебное; старые такие удаляем уже ПОСЛЕ отправки нового экрана.
 UI_MESSAGE_ID_KEY = "ui_message_id"
 UI_ACTION_MSG_IDS_KEY = "ui_action_msg_ids"
 
@@ -526,19 +526,36 @@ async def pop_action_prompt_ids(state: FSMContext) -> list[int]:
     return ids
 
 
-# Тихо удаляет сообщения по id (ошибки игнорируем).
-# Используется после отправки нового экрана, чтобы не тормозить ответ пользователю.
-async def delete_messages_silent(
+# Скрывает лишние служебные сообщения через edit в невидимый символ (без анимации пыли).
+# delete в Telegram всегда с «распадом»; edit — нет. Используется для хвостов после morph.
+async def dismiss_action_prompts(
     bot: Bot, chat_id: int, message_ids: list[int]
 ) -> None:
     for mid in message_ids:
         try:
-            await bot.delete_message(chat_id, mid)
+            await bot.edit_message_text(
+                text="\u2060",
+                chat_id=chat_id,
+                message_id=mid,
+            )
         except Exception:
             pass
 
 
-# Новый экран по Reply-кнопке: сначала ответ, потом чистка старых «Выберите действие:».
+# Ставит Reply-клавиатуру коротким служебным сообщением и сразу удаляет его.
+# Используется после edit «Выберите действие:» → новый экран (edit не умеет ReplyKeyboard).
+async def push_reply_keyboard(
+    message: Message, reply_markup: ReplyKeyboardMarkup
+) -> None:
+    try:
+        stub = await message.answer("\u2060", reply_markup=reply_markup)
+        await stub.delete()
+    except Exception:
+        pass
+
+
+# Экран по Reply-кнопке. Если есть «Выберите действие:» — превращаем его в новый текст
+# (без пыли, как статус анализа); иначе шлём новое сообщение.
 # Используется show_* и промптами подменю.
 async def replace_ui(
     message: Message,
@@ -547,10 +564,39 @@ async def replace_ui(
     reply_markup: ReplyKeyboardMarkup | InlineKeyboardMarkup | None = None,
 ) -> Message:
     stale_ids = await pop_action_prompt_ids(state)
+    if stale_ids:
+        try:
+            edited = await message.bot.edit_message_text(
+                text=text,
+                chat_id=message.chat.id,
+                message_id=stale_ids[0],
+            )
+            if isinstance(reply_markup, ReplyKeyboardMarkup):
+                await push_reply_keyboard(message, reply_markup)
+            elif isinstance(reply_markup, InlineKeyboardMarkup):
+                await message.bot.edit_message_reply_markup(
+                    chat_id=message.chat.id,
+                    message_id=stale_ids[0],
+                    reply_markup=reply_markup,
+                )
+            mid = (
+                edited.message_id
+                if isinstance(edited, Message)
+                else stale_ids[0]
+            )
+            await state.update_data(**{UI_MESSAGE_ID_KEY: mid})
+            if len(stale_ids) > 1:
+                await dismiss_action_prompts(
+                    message.bot, message.chat.id, stale_ids[1:]
+                )
+            return edited if isinstance(edited, Message) else message
+        except Exception:
+            pass
+
     sent = await message.answer(text, reply_markup=reply_markup)
     await state.update_data(**{UI_MESSAGE_ID_KEY: sent.message_id})
     if stale_ids:
-        await delete_messages_silent(message.bot, message.chat.id, stale_ids)
+        await dismiss_action_prompts(message.bot, message.chat.id, stale_ids)
     return sent
 #endregion
 
@@ -575,10 +621,32 @@ async def show_main_menu(
         is_today=True,
         title="🏠 Главное меню",
     )
+    if stale_ids:
+        try:
+            edited = await message.bot.edit_message_text(
+                text=text,
+                chat_id=message.chat.id,
+                message_id=stale_ids[0],
+            )
+            await push_reply_keyboard(message, kb_main_menu())
+            mid = (
+                edited.message_id
+                if isinstance(edited, Message)
+                else stale_ids[0]
+            )
+            await state.update_data(**{UI_MESSAGE_ID_KEY: mid})
+            if len(stale_ids) > 1:
+                await dismiss_action_prompts(
+                    message.bot, message.chat.id, stale_ids[1:]
+                )
+            return
+        except Exception:
+            pass
+
     sent = await message.answer(text, reply_markup=kb_main_menu())
     await state.update_data(**{UI_MESSAGE_ID_KEY: sent.message_id})
     if stale_ids:
-        await delete_messages_silent(message.bot, message.chat.id, stale_ids)
+        await dismiss_action_prompts(message.bot, message.chat.id, stale_ids)
 
 
 # Показывает дневник за дату с diary_offset + inline-навигацию.
@@ -618,7 +686,7 @@ async def show_diary(
         except Exception:
             pass
 
-    # Reply-вход: сначала новая карточка + «Выберите действие:», потом удаляем старые служебные.
+    # Reply-вход: новая карточка + «Выберите действие:»; старое служебное — edit без пыли.
     stale_ids = await pop_action_prompt_ids(state)
     card = await message.answer(text, reply_markup=nav)
     actions = await message.answer("Выберите действие:", reply_markup=kb_diary())
@@ -629,7 +697,7 @@ async def show_diary(
         }
     )
     if stale_ids:
-        await delete_messages_silent(message.bot, message.chat.id, stale_ids)
+        await dismiss_action_prompts(message.bot, message.chat.id, stale_ids)
 
 
 # Памятка «Распознать» без запуска анализа.
