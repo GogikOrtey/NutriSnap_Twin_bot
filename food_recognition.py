@@ -16,11 +16,12 @@ food_recognition.py — FSM-флоу распознавания еды для Nu
 4. Анализ через Gemini (_generate_with_fallback, analyze_food_photo/text).
 5. Нормализация и форматирование результата.
 6. Клавиатуры confirm / label / cancel / edit-menu (+ «🏠 Главное меню»).
-7. Утилиты (save_to_console, download_photo_temp, parse_food_result).
+7. Утилиты (save_to_console, persist_confirmed_food, download_photo_temp, parse_food_result).
 8. Confirm UI (show/finalize/schedule/handle_ai_result).
 9. Хендлеры: фото, подсказка, вес, текст, callbacks, меню правок.
-10. setup_food_recognition — MemoryStorage + тексты меню / «🏠»; возвращает router.
+10. setup_food_recognition — MemoryStorage + тексты меню / «🏠» + on_food_saved; возвращает router.
     Reply «🏠» скрыта с отправки фото/текста до ✅ или отмены после «✏️ Изменить».
+    После ✅/авто-✅ вызывается on_food_saved (в main — триггер reminders).
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ import re
 import tempfile
 import uuid
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from aiogram import Bot, F, Router
@@ -143,6 +145,11 @@ _menu_button_texts: frozenset[str] = frozenset()
 
 # Текст «🏠 Главное меню» из main.py — скрываем на время анализа/confirm, показываем в «✏️ Изменить».
 _main_menu_button_text: str | None = None
+
+# Колбэк после подтверждения еды (main.py → триггер reminders). Сигнатура:
+# async (user_id, FoodResult, bot, chat_id) -> None
+OnFoodSavedCallback = Callable[[int, "FoodResult", Bot, int], Awaitable[None]]
+_on_food_saved: OnFoodSavedCallback | None = None
 
 
 # Фильтр: текст сообщения не является кнопкой главного меню (проверка на runtime).
@@ -464,7 +471,7 @@ async def end_with_status_text(
 
 #region Утилиты
 # Печатает итоговый JSON результата в консоль (заглушка вместо дневника/БД).
-# Используется при ✅ / автотаймауте / после пересчёта веса.
+# Используется из persist_confirmed_food при ✅ / автотаймауте / после пересчёта веса.
 def save_to_console(result: FoodResult) -> None:
     payload = result.model_dump()
     print(
@@ -473,6 +480,20 @@ def save_to_console(result: FoodResult) -> None:
         "==========================\n",
         flush=True,
     )
+
+
+# «Сохраняет» подтверждённый результат (консоль) и вызывает on_food_saved (reminders).
+# Используется при ✅ / автотаймауте / после пересчёта веса этикетки.
+async def persist_confirmed_food(
+    result: FoodResult,
+    *,
+    user_id: int,
+    bot: Bot,
+    chat_id: int,
+) -> None:
+    save_to_console(result)
+    if _on_food_saved is not None:
+        await _on_food_saved(user_id, result, bot, chat_id)
 
 
 # Скачивает Telegram-фото по file_id во временный .jpg и возвращает путь.
@@ -551,7 +572,7 @@ async def schedule_auto_confirm(
         return
 
     result = FoodResult.model_validate(result_data)
-    save_to_console(result)
+    await persist_confirmed_food(result, user_id=user_id, bot=bot, chat_id=chat_id)
     await state.clear()
     await finalize_confirmed_preview(
         result, bot=bot, chat_id=chat_id, message_id=preview_message_id
@@ -842,7 +863,10 @@ async def on_weight_text(message: Message, state: FSMContext) -> None:
 
     base = FoodResult.model_validate(result_data)
     updated = recalc_by_weight(base, weight)
-    save_to_console(updated)
+    user_id = message.from_user.id if message.from_user else 0
+    await persist_confirmed_food(
+        updated, user_id=user_id, bot=message.bot, chat_id=message.chat.id
+    )
     await state.clear()
     await message.answer(
         f"{format_food_result(updated)}\n\nУчтено ✅ (с пересчётом на {weight:g} г)",
@@ -944,7 +968,12 @@ async def on_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     # Инвалидируем таймер.
     await state.update_data(confirm_token=None)
     result = FoodResult.model_validate(result_data)
-    save_to_console(result)
+    await persist_confirmed_food(
+        result,
+        user_id=callback.from_user.id,
+        bot=callback.bot,
+        chat_id=callback.message.chat.id if callback.message else callback.from_user.id,
+    )
     await state.clear()
     await finalize_confirmed_preview(result, message=callback.message)
     await callback.message.answer(
@@ -1095,16 +1124,19 @@ async def on_cancel(callback: CallbackQuery, state: FSMContext) -> None:
 #endregion
 
 #region Setup
-# Подключает MemoryStorage, тексты кнопок меню и «🏠 Главное меню»; возвращает router.
-# Используется в main.py: setup_food_recognition(storage, menu_button_texts=..., ...).
+# Подключает MemoryStorage, тексты меню / «🏠» и колбэк после сохранения еды; возвращает router.
+# Используется в main.py: setup_food_recognition(storage, menu_button_texts=...,
+#   main_menu_button_text=..., on_food_saved=...).
 def setup_food_recognition(
     storage: MemoryStorage,
     menu_button_texts: frozenset[str] | None = None,
     main_menu_button_text: str | None = None,
+    on_food_saved: OnFoodSavedCallback | None = None,
 ) -> Router:
-    global _storage, _menu_button_texts, _main_menu_button_text
+    global _storage, _menu_button_texts, _main_menu_button_text, _on_food_saved
     _storage = storage
     _menu_button_texts = menu_button_texts or frozenset()
     _main_menu_button_text = main_menu_button_text
+    _on_food_saved = on_food_saved
     return router
 #endregion

@@ -4,16 +4,16 @@ main.py — точка входа Telegram-бота NutriSnap (@nutrisnap_ultra_
 Зачем нужен файл
 ----------------
 Запуск бота (long polling), инфраструктура (Bot, Dispatcher, MemoryStorage),
-главное меню (дневник, распознать, настройки, выгрузка) и /start.
+главное меню (дневник, распознать, настройки, напоминания, выгрузка) и /start.
 Распознавание еды — в food_recognition.py (отдельный Router).
 
 Как устроен файл
 ----------------
 1. Импорты, .env, константы кнопок, MenuFlow.
-2. Stub-хранилище и 🔰-хелперы (заглушки вместо SQL).
+2. Stub-хранилище и 🔰-хелперы (заглушки вместо SQL: users / food_logs / reminders).
 3. Форматтеры экранов и Reply/Inline-клавиатуры.
 4. UI-хелперы: Reply → новое сообщение; Inline дневника → edit; чистка «Выберите действие:».
-5. Router меню + хендлеры; /start открывает главное меню.
+5. Router меню + хендлеры; /start открывает главное меню; on_food_saved → reminders.
 6. main() — старт polling.
 """
 
@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import html
 import os
+import time
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -79,6 +80,7 @@ BTN_MONTH_30_60 = "2️⃣ От 30 до 60 дней назад"
 BTN_MONTH_60_90 = "3️⃣ От 60 до 90 дней назад"
 
 BTN_SET_DAY_HOUR = "🕓 Время смены суток"
+BTN_SET_REMINDERS = "🔔 Напоминания и Витамины"
 BTN_SET_EXPORT = "📤 Сделать выгрузку журнала"
 BTN_SET_FEEDBACK = "💬 Отправить отзыв"
 BTN_SET_PROFILE = "👤 Изменить данные профиля"
@@ -90,12 +92,37 @@ BTN_CONFIRM_UPDATE_NO = "❌ Нет, отмена"
 BTN_CONFIRM_RECALC_YES = "✅ Да, пересчитать ккал"
 BTN_CONFIRM_RECALC_NO = "❌ Нет, оставить как есть"
 
+BTN_REM_ADD = "➕ Добавить напоминание"
+BTN_REM_LIST = "📋 Мои напоминания"
+BTN_REM_WINDOW_BREAKFAST = "🌅 Завтрак 07:00–11:00"
+BTN_REM_WINDOW_LUNCH = "☀️ Обед 12:00–16:00"
+BTN_REM_WINDOW_DINNER = "🌙 Ужин 17:00–22:00"
+BTN_REM_ANY_FOOD = "🍽 Любая еда"
+BTN_REM_HEARTY = "🍲 Только сытный приём (>250 ккал)"
+BTN_REM_TOGGLE = "⏯ Вкл / Выкл"
+BTN_REM_DELETE = "🗑 Удалить"
+BTN_REM_DELETE_YES = "✅ Да, удалить"
+BTN_REM_DELETE_NO = "❌ Нет, оставить"
+
 BTN_GOAL_LOSS = "📉 Похудение"
 BTN_GOAL_GAIN = "📈 Набор веса"
 BTN_GOAL_MAINTAIN = "⚖️ Просто отслеживание"
 
 CALLBACK_DIARY_PREV = "diary:prev"
 CALLBACK_DIARY_NEXT = "diary:next"
+CALLBACK_REM_SNOOZE_PREFIX = "rem:snooze:"
+CALLBACK_REM_OK_PREFIX = "rem:ok:"
+
+# Шаблоны окон напоминаний (time_start, time_end) — каждый день, без выбора дней недели.
+REMINDER_WINDOWS: dict[str, tuple[str, str]] = {
+    BTN_REM_WINDOW_BREAKFAST: ("07:00", "11:00"),
+    BTN_REM_WINDOW_LUNCH: ("12:00", "16:00"),
+    BTN_REM_WINDOW_DINNER: ("17:00", "22:00"),
+}
+# Порог «сытного» приёма для min_calories в reminders.
+REMINDER_HEARTY_MIN_KCAL = 250
+# Заморозка уведомлений, если пользователь не заходил N дней (users.last_active_at).
+REMINDER_FREEZE_AFTER_DAYS = 3
 
 GOAL_LABELS = {
     "weight_loss": "Похудение",
@@ -138,6 +165,7 @@ MENU_BUTTON_TEXTS: frozenset[str] = frozenset(
         BTN_MONTH_30_60,
         BTN_MONTH_60_90,
         BTN_SET_DAY_HOUR,
+        BTN_SET_REMINDERS,
         BTN_SET_EXPORT,
         BTN_SET_FEEDBACK,
         BTN_SET_PROFILE,
@@ -148,6 +176,17 @@ MENU_BUTTON_TEXTS: frozenset[str] = frozenset(
         BTN_CONFIRM_UPDATE_NO,
         BTN_CONFIRM_RECALC_YES,
         BTN_CONFIRM_RECALC_NO,
+        BTN_REM_ADD,
+        BTN_REM_LIST,
+        BTN_REM_WINDOW_BREAKFAST,
+        BTN_REM_WINDOW_LUNCH,
+        BTN_REM_WINDOW_DINNER,
+        BTN_REM_ANY_FOOD,
+        BTN_REM_HEARTY,
+        BTN_REM_TOGGLE,
+        BTN_REM_DELETE,
+        BTN_REM_DELETE_YES,
+        BTN_REM_DELETE_NO,
         BTN_GOAL_LOSS,
         BTN_GOAL_GAIN,
         BTN_GOAL_MAINTAIN,
@@ -167,12 +206,20 @@ class MenuFlow(StatesGroup):
     settings_goal_recalc = State()
     feedback_wait = State()
     export_month_pick = State()
+    reminders_add_title = State()
+    reminders_add_window = State()
+    reminders_add_min_cal = State()
+    reminders_list_pick = State()
+    reminders_item_action = State()
+    reminders_delete_confirm = State()
 #endregion
 
 #region Stub-хранилище (вместо БД)
 # In-memory профили и записи на время сессии процесса — пока нет SQL.
 _stub_profiles: dict[int, dict[str, Any]] = {}
 _stub_food_logs: dict[int, list[dict[str, Any]]] = {}
+_stub_reminders: dict[int, list[dict[str, Any]]] = {}
+_stub_reminder_id_seq = 0
 
 
 # 🔰 Профиль пользователя (users). Создаёт тестовый профиль при первом обращении.
@@ -192,8 +239,17 @@ def stub_get_user(user_id: int) -> dict[str, Any]:
             "daily_calories": 2200,
             "timezone": "Europe/Moscow",
             "day_change_hour": 4,
+            "last_active_at": int(time.time()),
         }
     return _stub_profiles[user_id]
+
+
+# 🔰 Обновляет users.last_active_at (для заморозки напоминаний через 3 дня).
+# Используется при активности в боте и перед проверкой триггеров.
+def stub_touch_user_activity(user_id: int) -> None:
+    # 🔰 UPDATE users SET last_active_at = ? WHERE id = ?
+    user = stub_get_user(user_id)
+    user["last_active_at"] = int(time.time())
 
 
 # 🔰 Инициализация тестовых food_logs на «сегодня» (если ещё нет записей).
@@ -320,6 +376,156 @@ def stub_send_feedback(user_id: int, text: str, has_photo: bool) -> None:
         f"🔰 feedback user_id={user_id} has_photo={has_photo} text={text!r}",
         flush=True,
     )
+
+
+# 🔰 Список напоминаний пользователя (reminders), от новых к старым по id.
+# Используется экранами «Напоминания» / «Мои напоминания».
+def stub_get_reminders(user_id: int) -> list[dict[str, Any]]:
+    # 🔰 SELECT * FROM reminders WHERE user_id = ? ORDER BY id
+    return list(_stub_reminders.get(user_id, []))
+
+
+# 🔰 Одно напоминание по id (только своё).
+# Используется карточкой напоминания, toggle/delete и snooze.
+def stub_get_reminder(user_id: int, reminder_id: int) -> dict[str, Any] | None:
+    # 🔰 SELECT * FROM reminders WHERE id = ? AND user_id = ?
+    for row in _stub_reminders.get(user_id, []):
+        if row["id"] == reminder_id:
+            return row
+    return None
+
+
+# 🔰 Создание напоминания (reminders).
+# Используется флоу «➕ Добавить напоминание».
+def stub_add_reminder(
+    user_id: int,
+    title: str,
+    time_start: str,
+    time_end: str,
+    min_calories: int,
+) -> dict[str, Any]:
+    # 🔰 INSERT INTO reminders (user_id, title, time_start, time_end, min_calories)
+    #    VALUES (?, ?, ?, ?, ?) RETURNING *
+    global _stub_reminder_id_seq
+    _stub_reminder_id_seq += 1
+    row = {
+        "id": _stub_reminder_id_seq,
+        "user_id": user_id,
+        "title": title,
+        "time_start": time_start,
+        "time_end": time_end,
+        "min_calories": int(min_calories),
+        "is_triggered_today": False,
+        "is_active": True,
+        "_trigger_date": logical_today(stub_get_user(user_id)),
+    }
+    _stub_reminders.setdefault(user_id, []).append(row)
+    return row
+
+
+# 🔰 Вкл/выкл напоминания (reminders.is_active).
+# Используется карточкой «Мои напоминания».
+def stub_set_reminder_active(user_id: int, reminder_id: int, is_active: bool) -> bool:
+    # 🔰 UPDATE reminders SET is_active = ? WHERE id = ? AND user_id = ?
+    row = stub_get_reminder(user_id, reminder_id)
+    if row is None:
+        return False
+    row["is_active"] = bool(is_active)
+    return True
+
+
+# 🔰 Удаление напоминания.
+# Используется карточкой «Мои напоминания».
+def stub_delete_reminder(user_id: int, reminder_id: int) -> bool:
+    # 🔰 DELETE FROM reminders WHERE id = ? AND user_id = ?
+    rows = _stub_reminders.get(user_id, [])
+    before = len(rows)
+    _stub_reminders[user_id] = [r for r in rows if r["id"] != reminder_id]
+    return len(_stub_reminders.get(user_id, [])) < before
+
+
+# 🔰 Сброс is_triggered_today при смене логических суток (заглушка вместо cron).
+# Используется перед проверкой триггеров после сохранения еды.
+def _stub_reset_reminder_triggers_if_new_day(user_id: int) -> None:
+    # 🔰 UPDATE reminders SET is_triggered_today = FALSE
+    #    WHERE user_id = ? AND <смена логических суток>
+    user = stub_get_user(user_id)
+    today = logical_today(user)
+    for row in _stub_reminders.get(user_id, []):
+        if row.get("_trigger_date") != today:
+            row["is_triggered_today"] = False
+            row["_trigger_date"] = today
+
+
+# 🔰 Пользователь «заморожен» по last_active_at (нет активности > N дней).
+# Используется proactive/missed-уведомлениями; food-триггер обычно идёт при визите.
+def stub_reminders_frozen(user_id: int) -> bool:
+    user = stub_get_user(user_id)
+    last = int(user.get("last_active_at") or 0)
+    if last <= 0:
+        return False
+    return (time.time() - last) > REMINDER_FREEZE_AFTER_DAYS * 86400
+
+
+# 🔰 Перенос сработавшего напоминания на следующую еду (сброс is_triggered_today).
+# Используется inline «⏰ На следующую еду» под уведомлением.
+def stub_snooze_reminder(user_id: int, reminder_id: int) -> bool:
+    # 🔰 UPDATE reminders SET is_triggered_today = FALSE WHERE id = ? AND user_id = ?
+    row = stub_get_reminder(user_id, reminder_id)
+    if row is None:
+        return False
+    row["is_triggered_today"] = False
+    row["_trigger_date"] = logical_today(stub_get_user(user_id))
+    return True
+
+
+# 🔰 После INSERT в food_logs: активные reminders в текущем окне времени,
+# calories >= min_calories, ещё не срабатывали сегодня → пометить и вернуть список.
+# Используется колбэком on_food_saved из food_recognition.
+def stub_trigger_reminders_for_food(
+    user_id: int, calories: int
+) -> list[dict[str, Any]]:
+    # 🔰 SELECT * FROM reminders
+    #    WHERE user_id = ? AND is_active AND NOT is_triggered_today
+    #      AND time_start <= now_local <= time_end
+    #      AND ? >= min_calories;
+    # 🔰 затем UPDATE is_triggered_today = TRUE для найденных.
+    # Заморозка (3 дня) на food-триггер не влияет — пользователь уже в боте.
+    stub_touch_user_activity(user_id)
+    _stub_reset_reminder_triggers_if_new_day(user_id)
+    user = stub_get_user(user_id)
+    now_hm = datetime.now(ZoneInfo(user["timezone"])).strftime("%H:%M")
+    kcal = int(calories or 0)
+    triggered: list[dict[str, Any]] = []
+    for row in _stub_reminders.get(user_id, []):
+        if not row.get("is_active"):
+            continue
+        if row.get("is_triggered_today"):
+            continue
+        if not (row["time_start"] <= now_hm <= row["time_end"]):
+            continue
+        if kcal < int(row.get("min_calories") or 0):
+            continue
+        row["is_triggered_today"] = True
+        row["_trigger_date"] = logical_today(user)
+        triggered.append(dict(row))
+        print(
+            f"🔰 reminder triggered user_id={user_id} id={row['id']} "
+            f"title={row['title']!r} kcal={kcal}",
+            flush=True,
+        )
+    return triggered
+
+
+# 🔰 Заглушка проверки «окно закончилось, еду не залогировали» (будущий cron/job).
+# Сейчас не вызывается — планировщик подключим отдельно.
+def stub_check_missed_reminders(user_id: int) -> list[dict[str, Any]]:
+    # 🔰 SELECT active reminders WHERE now > time_end AND NOT is_triggered_today
+    #    AND user not frozen; затем уведомить «пропущено».
+    if stub_reminders_frozen(user_id):
+        return []
+    _ = user_id
+    return []
 #endregion
 
 #region Дата / прогресс / форматтеры
@@ -686,18 +892,104 @@ def kb_nav_only() -> ReplyKeyboardMarkup:
     )
 
 
-# Reply-клавиатура раздела «Настройки» (без напоминаний).
+# Reply-клавиатура раздела «Настройки».
 # Используется show_settings.
 def kb_settings() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_SET_PROFILE)],
             [KeyboardButton(text=BTN_SET_DAY_HOUR)],
+            [KeyboardButton(text=BTN_SET_REMINDERS)],
             [KeyboardButton(text=BTN_SET_EXPORT)],
-            [KeyboardButton(text=BTN_SET_FEEDBACK)],            
+            [KeyboardButton(text=BTN_SET_FEEDBACK)],
             [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
         ],
         resize_keyboard=True,
+    )
+
+
+# Reply-клавиатура раздела «Напоминания и Витамины».
+# Используется show_reminders.
+def kb_reminders() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_REM_ADD)],
+            [KeyboardButton(text=BTN_REM_LIST)],
+            [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# Reply-клавиатура выбора временного окна напоминания.
+# Используется флоу «➕ Добавить напоминание» (шаг окна).
+def kb_reminder_windows() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_REM_WINDOW_BREAKFAST)],
+            [KeyboardButton(text=BTN_REM_WINDOW_LUNCH)],
+            [KeyboardButton(text=BTN_REM_WINDOW_DINNER)],
+            [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# Reply-клавиатура порога калорий для срабатывания напоминания.
+# Используется флоу «➕ Добавить напоминание» (шаг «реагировать на»).
+def kb_reminder_min_cal() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_REM_ANY_FOOD)],
+            [KeyboardButton(text=BTN_REM_HEARTY)],
+            [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# Reply-клавиатура действий с одним напоминанием (вкл/выкл / удалить).
+# Используется карточкой выбранного напоминания.
+def kb_reminder_item() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_REM_TOGGLE)],
+            [KeyboardButton(text=BTN_REM_DELETE)],
+            [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# Reply-клавиатура подтверждения удаления напоминания.
+# Используется флоу «🗑 Удалить» → reminders_delete_confirm.
+def kb_confirm_delete_reminder() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_REM_DELETE_YES)],
+            [KeyboardButton(text=BTN_REM_DELETE_NO)],
+            [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# Inline под уведомлением о напоминании: перенос на следующую еду / ок.
+# Используется notify_reminders_after_food.
+def kb_reminder_notify(reminder_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⏰ На следующую еду",
+                    callback_data=f"{CALLBACK_REM_SNOOZE_PREFIX}{reminder_id}",
+                ),
+                InlineKeyboardButton(
+                    text="✅ Понятно",
+                    callback_data=f"{CALLBACK_REM_OK_PREFIX}{reminder_id}",
+                ),
+            ]
+        ]
     )
 
 
@@ -991,22 +1283,105 @@ async def show_recognize(message: Message, state: FSMContext) -> None:
     await replace_ui(message, state, text, reply_markup=kb_recognize())
 
 
-# Экран настроек (без пункта напоминаний).
+# Экран настроек.
 # Используется кнопкой ⚙️ Настройки и возвратами из подменю.
 async def show_settings(message: Message, state: FSMContext) -> None:
     await state.set_state(None)
     await state.update_data(export_return="settings", menu_screen="settings")
     user_id = message.from_user.id if message.from_user else 0
     user = stub_get_user(user_id)
+    rem_count = len(stub_get_reminders(user_id))
     text = (
         "⚙️ Настройки\n"
         "\n"
         f"Смена суток: {user['day_change_hour']:02d}:00 "
         f"({user['timezone']})\n"
         f"Цель: {goal_label(user['goal'])}\n"
-        f"Норма: {user['daily_calories']} ккал/сутки"
+        f"Норма: {user['daily_calories']} ккал/сутки\n"
+        f"Напоминания: {rem_count}"
     )
     await replace_ui(message, state, text, reply_markup=kb_settings())
+
+
+# Подпись порога калорий напоминания для UI.
+# Используется списками и карточкой напоминания.
+def format_reminder_min_cal(min_calories: int) -> str:
+    if int(min_calories or 0) <= 0:
+        return "любая еда"
+    return f"сытный приём (>{int(min_calories)} ккал)"
+
+
+# Одна строка напоминания в нумерованном списке.
+# Используется format_reminders_list и экраном «Мои напоминания».
+def format_reminder_list_item(index: int, row: dict[str, Any]) -> str:
+    status = "✅" if row.get("is_active") else "⏸"
+    return (
+        f"{index}. {status} {row['title']}\n"
+        f"⠀⠀⠀{row['time_start']}–{row['time_end']} · "
+        f"{format_reminder_min_cal(int(row.get('min_calories') or 0))}"
+    )
+
+
+# Нумерованный список напоминаний пользователя.
+# Используется экраном «📋 Мои напоминания».
+def format_reminders_list(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "Пока нет ни одного напоминания"
+    return "\n\n".join(
+        format_reminder_list_item(i, row) for i, row in enumerate(rows, start=1)
+    )
+
+
+# Текст карточки одного напоминания (детали + статус).
+# Используется экраном управления выбранным напоминанием.
+def format_reminder_card(row: dict[str, Any]) -> str:
+    status = "включено" if row.get("is_active") else "выключено"
+    return (
+        f"🔔 {row['title']}\n"
+        "\n"
+        f"Окно: {row['time_start']}–{row['time_end']}\n"
+        f"Реагирует на: {format_reminder_min_cal(int(row.get('min_calories') or 0))}\n"
+        f"Статус: {status}"
+    )
+
+
+# Экран «🔔 Напоминания и Витамины»: описание + добавить / список.
+# Используется пунктом настроек и возвратами из подфлоу напоминаний.
+async def show_reminders(message: Message, state: FSMContext) -> None:
+    await state.set_state(None)
+    await state.update_data(menu_screen="reminders")
+    text = (
+        "🔔 Напоминания и Витамины\n"
+        "\n"
+        "Бот напомнит о витаминах или другом деле перед едой: "
+        "как только вы залогируете приём пищи в выбранном окне времени "
+        "(завтрак / обед / ужин), придёт уведомление.\n"
+        "\n"
+        "Можно реагировать на любую еду или только на сытный приём "
+        f"(>{REMINDER_HEARTY_MIN_KCAL} ккал). "
+        "Напоминания работают каждый день; если не заходить в бота "
+        f"больше {REMINDER_FREEZE_AFTER_DAYS} дней — они замораживаются.\n"
+        "\n"
+        "Выберите действие:"
+    )
+    await replace_ui(message, state, text, reply_markup=kb_reminders())
+
+
+# Шлёт уведомления по сработавшим reminders после сохранения еды.
+# Используется колбэком on_food_saved из food_recognition.
+async def notify_reminders_after_food(
+    user_id: int,
+    calories: int,
+    bot: Bot,
+    chat_id: int,
+) -> None:
+    triggered = stub_trigger_reminders_for_food(user_id, calories)
+    for row in triggered:
+        await bot.send_message(
+            chat_id,
+            f"🔔 Нужно: {row['title']}",
+            reply_markup=kb_reminder_notify(int(row["id"])),
+        )
 
 
 # Экран «Изменить данные профиля»: сводка + кнопки опроса/цели/ккал.
@@ -1080,12 +1455,25 @@ menu_router = Router(name="main_menu")
 
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
+# Колбэк после подтверждения еды: проверка reminders и рассылка уведомлений.
+# Передаётся в food_recognition.setup_food_recognition(on_food_saved=...).
+async def _on_food_saved(
+    user_id: int,
+    result: Any,
+    bot: Bot,
+    chat_id: int,
+) -> None:
+    calories = int(getattr(result, "calories", 0) or 0)
+    await notify_reminders_after_food(user_id, calories, bot, chat_id)
+
+
 dp.include_router(menu_router)
 dp.include_router(
     setup_food_recognition(
         storage,
         menu_button_texts=MENU_BUTTON_TEXTS,
         main_menu_button_text=BTN_MAIN_MENU,
+        on_food_saved=_on_food_saved,
     )
 )
 #endregion
@@ -1153,6 +1541,55 @@ async def on_back(message: Message, state: FSMContext) -> None:
     ):
         await show_settings(message, state)
         return
+    if current == MenuFlow.reminders_add_window.state:
+        await state.set_state(MenuFlow.reminders_add_title)
+        await state.update_data(menu_screen="reminders")
+        await replace_ui(
+            message,
+            state,
+            "➕ Добавить напоминание\n"
+            "\n"
+            "Введите название — например, «Выпить Омега-3» или «Витамин D»",
+            reply_markup=kb_nav_only(),
+        )
+        return
+    if current == MenuFlow.reminders_add_min_cal.state:
+        await state.set_state(MenuFlow.reminders_add_window)
+        await state.update_data(menu_screen="reminders")
+        await replace_ui(
+            message,
+            state,
+            "➕ Добавить напоминание\n"
+            "\n"
+            "Выберите окно времени — напоминание сработает "
+            "при первой подходящей еде в этом интервале:",
+            reply_markup=kb_reminder_windows(),
+        )
+        return
+    if current == MenuFlow.reminders_delete_confirm.state:
+        # Назад с подтверждения удаления → снова карточка напоминания.
+        rem_id = int(data.get("rem_edit_id") or 0)
+        user_id = message.from_user.id if message.from_user else 0
+        row = stub_get_reminder(user_id, rem_id)
+        if row is None:
+            await show_reminders(message, state)
+            return
+        await state.set_state(MenuFlow.reminders_item_action)
+        await state.update_data(menu_screen="reminders")
+        await replace_ui(
+            message,
+            state,
+            format_reminder_card(row),
+            reply_markup=kb_reminder_item(),
+        )
+        return
+    if current in (
+        MenuFlow.reminders_add_title.state,
+        MenuFlow.reminders_list_pick.state,
+        MenuFlow.reminders_item_action.state,
+    ):
+        await show_reminders(message, state)
+        return
 
     # menu_screen в FSM: из выгрузки — назад в diary/settings; из разделов — в корень.
     screen = data.get("menu_screen", "main")
@@ -1171,6 +1608,9 @@ async def on_back(message: Message, state: FSMContext) -> None:
         await show_profile(message, state)
         return
     if screen == "profile":
+        await show_settings(message, state)
+        return
+    if screen == "reminders":
         await show_settings(message, state)
         return
     await show_main_menu(message, state)
@@ -1719,6 +2159,331 @@ async def on_set_calories_value(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
     stub_set_daily_calories(user_id, int(text))
     await show_profile(message, state)
+#endregion
+
+#region Хендлеры: напоминания
+# Открыть раздел «Напоминания и Витамины».
+@menu_router.message(F.text == BTN_SET_REMINDERS)
+async def on_set_reminders(message: Message, state: FSMContext) -> None:
+    stub_touch_user_activity(message.from_user.id if message.from_user else 0)
+    await show_reminders(message, state)
+
+
+# Старт добавления: запрос названия.
+@menu_router.message(F.text == BTN_REM_ADD)
+async def on_rem_add_start(message: Message, state: FSMContext) -> None:
+    await state.set_state(MenuFlow.reminders_add_title)
+    await state.update_data(menu_screen="reminders", rem_draft={})
+    await replace_ui(
+        message,
+        state,
+        "➕ Добавить напоминание\n"
+        "\n"
+        "Введите название — например, «Выпить Омега-3» или «Витамин D»",
+        reply_markup=kb_nav_only(),
+    )
+
+
+# Шаг 1: название → выбор окна.
+@menu_router.message(
+    MenuFlow.reminders_add_title, F.text, ~F.text.in_(MENU_BUTTON_TEXTS)
+)
+async def on_rem_add_title(message: Message, state: FSMContext) -> None:
+    title = (message.text or "").strip()
+    if not title:
+        await message.answer("Название не может быть пустым — введите текст")
+        return
+    if len(title) > 255:
+        await message.answer("Слишком длинное название — до 255 символов")
+        return
+    await state.update_data(rem_draft={"title": title})
+    await state.set_state(MenuFlow.reminders_add_window)
+    await replace_ui(
+        message,
+        state,
+        "➕ Добавить напоминание\n"
+        "\n"
+        f"Название: {title}\n"
+        "\n"
+        "Выберите окно времени — напоминание сработает "
+        "при первой подходящей еде в этом интервале:",
+        reply_markup=kb_reminder_windows(),
+    )
+
+
+# Шаг 2: окно → порог калорий.
+@menu_router.message(
+    MenuFlow.reminders_add_window, F.text.in_(set(REMINDER_WINDOWS))
+)
+async def on_rem_add_window(message: Message, state: FSMContext) -> None:
+    window = REMINDER_WINDOWS[message.text or ""]
+    data = await state.get_data()
+    draft = dict(data.get("rem_draft") or {})
+    draft["time_start"] = window[0]
+    draft["time_end"] = window[1]
+    await state.update_data(rem_draft=draft)
+    await state.set_state(MenuFlow.reminders_add_min_cal)
+    await replace_ui(
+        message,
+        state,
+        "➕ Добавить напоминание\n"
+        "\n"
+        f"Название: {draft.get('title', '')}\n"
+        f"Окно: {window[0]}–{window[1]}\n"
+        "\n"
+        "Реагировать на:",
+        reply_markup=kb_reminder_min_cal(),
+    )
+
+
+# Шаг 3: порог → 🔰 INSERT reminder.
+@menu_router.message(
+    MenuFlow.reminders_add_min_cal,
+    F.text.in_({BTN_REM_ANY_FOOD, BTN_REM_HEARTY}),
+)
+async def on_rem_add_min_cal(message: Message, state: FSMContext) -> None:
+    min_cal = 0 if message.text == BTN_REM_ANY_FOOD else REMINDER_HEARTY_MIN_KCAL
+    data = await state.get_data()
+    draft = dict(data.get("rem_draft") or {})
+    title = str(draft.get("title") or "").strip()
+    time_start = str(draft.get("time_start") or "")
+    time_end = str(draft.get("time_end") or "")
+    if not title or not time_start or not time_end:
+        await show_reminders(message, state)
+        return
+    user_id = message.from_user.id if message.from_user else 0
+    row = stub_add_reminder(user_id, title, time_start, time_end, min_cal)
+    await state.set_state(None)
+    await state.update_data(rem_draft={}, menu_screen="reminders")
+    await replace_ui(
+        message,
+        state,
+        "✅ Напоминание добавлено (🔰 stub)\n"
+        "\n"
+        f"{format_reminder_card(row)}\n"
+        "\n"
+        "Оно сработает при следующей подходящей еде в этом окне",
+        reply_markup=kb_reminders(),
+    )
+
+
+# Список напоминаний → выбор номера.
+@menu_router.message(F.text == BTN_REM_LIST)
+async def on_rem_list(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.id if message.from_user else 0
+    rows = stub_get_reminders(user_id)
+    if not rows:
+        await replace_ui(
+            message,
+            state,
+            "📋 Мои напоминания\n"
+            "\n"
+            "Пока пусто — добавьте первое через «➕ Добавить напоминание»",
+            reply_markup=kb_reminders(),
+        )
+        await state.set_state(None)
+        await state.update_data(menu_screen="reminders")
+        return
+    await state.set_state(MenuFlow.reminders_list_pick)
+    await state.update_data(
+        menu_screen="reminders",
+        rem_pick_ids=[r["id"] for r in rows],
+        pick_page=0,
+    )
+    await replace_ui(
+        message,
+        state,
+        "📋 Мои напоминания\n"
+        "\n"
+        f"{format_reminders_list(rows)}\n"
+        "\n"
+        "Выберите номер, чтобы отключить или удалить:",
+        reply_markup=kb_pick_dish(len(rows), page=0),
+    )
+
+
+# Пагинация списка напоминаний (▶️ / ◀️), как у выбора блюд.
+@menu_router.message(
+    MenuFlow.reminders_list_pick,
+    F.text.in_({BTN_PICK_PAGE_NEXT, BTN_PICK_PAGE_PREV}),
+)
+async def on_rem_list_page(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    pick_ids: list[int] = list(data.get("rem_pick_ids") or [])
+    page = int(data.get("pick_page", 0))
+    total = len(pick_ids)
+    max_page = max(0, (total - 1) // PICK_PAGE_SIZE)
+    if message.text == BTN_PICK_PAGE_NEXT and page < max_page:
+        page += 1
+    elif message.text == BTN_PICK_PAGE_PREV and page > 0:
+        page -= 1
+    await state.update_data(pick_page=page)
+    user_id = message.from_user.id if message.from_user else 0
+    rows = stub_get_reminders(user_id)
+    await replace_ui(
+        message,
+        state,
+        "📋 Мои напоминания\n"
+        "\n"
+        f"{format_reminders_list(rows)}\n"
+        "\n"
+        "Выберите номер, чтобы отключить или удалить:",
+        reply_markup=kb_pick_dish(total, page=page),
+    )
+
+
+# Выбор номера напоминания → карточка с действиями.
+@menu_router.message(
+    MenuFlow.reminders_list_pick, F.text, ~F.text.in_(MENU_BUTTON_TEXTS)
+)
+async def on_rem_list_pick(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    data = await state.get_data()
+    pick_ids: list[int] = list(data.get("rem_pick_ids") or [])
+    if not text.isdigit():
+        await message.answer("Выберите номер напоминания кнопкой на клавиатуре")
+        return
+    idx = int(text)
+    if idx < 1 or idx > len(pick_ids):
+        await message.answer(f"Нужен номер от 1 до {len(pick_ids)}")
+        return
+    user_id = message.from_user.id if message.from_user else 0
+    row = stub_get_reminder(user_id, pick_ids[idx - 1])
+    if row is None:
+        await show_reminders(message, state)
+        return
+    await state.set_state(MenuFlow.reminders_item_action)
+    await state.update_data(rem_edit_id=row["id"], menu_screen="reminders")
+    await replace_ui(
+        message,
+        state,
+        format_reminder_card(row),
+        reply_markup=kb_reminder_item(),
+    )
+
+
+# Переключить is_active выбранного напоминания.
+@menu_router.message(MenuFlow.reminders_item_action, F.text == BTN_REM_TOGGLE)
+async def on_rem_toggle(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    rem_id = int(data.get("rem_edit_id") or 0)
+    user_id = message.from_user.id if message.from_user else 0
+    row = stub_get_reminder(user_id, rem_id)
+    if row is None:
+        await show_reminders(message, state)
+        return
+    stub_set_reminder_active(user_id, rem_id, not bool(row.get("is_active")))
+    row = stub_get_reminder(user_id, rem_id)
+    assert row is not None
+    await replace_ui(
+        message,
+        state,
+        f"{'▶️ Включено' if row['is_active'] else '⏸ Выключено'} (🔰 stub)\n"
+        "\n"
+        f"{format_reminder_card(row)}",
+        reply_markup=kb_reminder_item(),
+    )
+
+
+# Запрос подтверждения перед удалением напоминания.
+@menu_router.message(MenuFlow.reminders_item_action, F.text == BTN_REM_DELETE)
+async def on_rem_delete_ask(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    rem_id = int(data.get("rem_edit_id") or 0)
+    user_id = message.from_user.id if message.from_user else 0
+    row = stub_get_reminder(user_id, rem_id)
+    if row is None:
+        await show_reminders(message, state)
+        return
+    title = str(row.get("title") or "напоминание")
+    await state.set_state(MenuFlow.reminders_delete_confirm)
+    await state.update_data(menu_screen="reminders")
+    await replace_ui(
+        message,
+        state,
+        "🗑 Удалить напоминание?\n"
+        "\n"
+        f"«{title}»\n"
+        "\n"
+        "Точно удалить? Это действие нельзя отменить",
+        reply_markup=kb_confirm_delete_reminder(),
+    )
+
+
+# Подтверждение удаления → 🔰 DELETE reminder.
+@menu_router.message(MenuFlow.reminders_delete_confirm, F.text == BTN_REM_DELETE_YES)
+async def on_rem_delete_yes(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    rem_id = int(data.get("rem_edit_id") or 0)
+    user_id = message.from_user.id if message.from_user else 0
+    title = ""
+    row = stub_get_reminder(user_id, rem_id)
+    if row:
+        title = str(row.get("title") or "")
+    stub_delete_reminder(user_id, rem_id)
+    await state.set_state(None)
+    await state.update_data(menu_screen="reminders", rem_edit_id=None)
+    await replace_ui(
+        message,
+        state,
+        f"🗑 Удалено: {title or 'напоминание'} (🔰 stub)",
+        reply_markup=kb_reminders(),
+    )
+
+
+# Отказ от удаления → назад к карточке напоминания.
+@menu_router.message(MenuFlow.reminders_delete_confirm, F.text == BTN_REM_DELETE_NO)
+async def on_rem_delete_no(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    rem_id = int(data.get("rem_edit_id") or 0)
+    user_id = message.from_user.id if message.from_user else 0
+    row = stub_get_reminder(user_id, rem_id)
+    if row is None:
+        await show_reminders(message, state)
+        return
+    await state.set_state(MenuFlow.reminders_item_action)
+    await state.update_data(menu_screen="reminders")
+    await replace_ui(
+        message,
+        state,
+        format_reminder_card(row),
+        reply_markup=kb_reminder_item(),
+    )
+
+
+# Inline: перенести напоминание на следующую еду (сброс is_triggered_today).
+@menu_router.callback_query(F.data.startswith(CALLBACK_REM_SNOOZE_PREFIX))
+async def on_rem_snooze(callback: CallbackQuery, state: FSMContext) -> None:
+    raw = (callback.data or "").removeprefix(CALLBACK_REM_SNOOZE_PREFIX)
+    if not raw.isdigit():
+        await callback.answer()
+        return
+    user_id = callback.from_user.id
+    ok = stub_snooze_reminder(user_id, int(raw))
+    await callback.answer("Перенесено на следующую еду" if ok else "Уже недоступно")
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        if ok:
+            try:
+                await callback.message.edit_text(
+                    f"{callback.message.text or ''}\n\n⏰ Перенесено на следующую еду"
+                )
+            except Exception:
+                pass
+
+
+# Inline: подтвердить уведомление (кнопки убираем).
+@menu_router.callback_query(F.data.startswith(CALLBACK_REM_OK_PREFIX))
+async def on_rem_ok(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer("Ок")
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
 #endregion
 
 #region Запуск
