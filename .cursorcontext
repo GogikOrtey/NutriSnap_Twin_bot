@@ -82,7 +82,7 @@ main.py
 
 - Проверка `TELEGRAM_BOT_API_KEY` / `GEMINI_API_KEY`, старт polling.
 
-- `/start` → главное меню (список блюд логического «сегодня» + прогресс-бар ккал).
+- `/start` → главный экран «🏠 Главный экран | Сегодня» (HTML): ккал `съедено/цель (%%)`, бар `▓▓/█`, остаток или превышение (⚠️ Перебор; при `goal=muscle_gain` — 💪 Донабор), сумма БЖУ, список записей с эмодзи и временем.
 
 - `MenuFlow`: выбор блюда (edit/delete), час смены суток, ккал, цель, отзыв, окно выгрузки «месяц».
 
@@ -96,7 +96,7 @@ main.py
 
 - Логическая дата: `timezone` + `day_change_hour` (по умолчанию Europe/Moscow, 4:00).
 
-- БД не подключена: `stub_get_*` / `stub_set_*` / `stub_delete_*` / `stub_send_feedback` с маркером `🔰` и in-memory тестовыми данными (3 блюда на «сегодня»).
+- БД не подключена: `stub_get_*` / `stub_set_*` / `stub_delete_*` / `stub_send_feedback` с маркером `🔰` и in-memory тестовыми данными (3 блюда на «сегодня», поле `emoji` у каждой записи).
 
 - Выгрузка журнала → `.txt` (`BufferedInputFile`) с промпт-шапкой профиля; периоды: день / вчера / 7 дней / окна 0–30 / 30–60 / 60–90.
 
@@ -119,7 +119,7 @@ main.py
 
   `gemini-flash-latest` → `gemini-3.5-flash` → `gemini-3.1-flash-lite` → `gemini-2.5-flash`.
 
-- Схема `FoodResult`: `status`, `dish`, `calories`, `proteins`, `fats`, `carbs`, `portion_g`, `portion_known`, `is_label`.
+- Схема `FoodResult`: `status`, `dish`, `emoji`, `calories`, `proteins`, `fats`, `carbs`, `portion_g`, `portion_known`, `is_label`.
 
 - Статусы ИИ: `recognized` | `unclear` | `no_food` | `label` | `bad_desc`.
 
@@ -127,7 +127,9 @@ main.py
 
 - `portion_g` обязателен при `recognized`: с фото — оценка веса порции; с текста — указанный вес или типичная средняя порция блюда.
 
-- Превью (`format_food_result`): сразу под названием блюда — «Примерная порция: ~N г» (для этикетки — «Порция: N г»).
+- `emoji` — один эмодзи блюда (промпт + схема); сохраняется вместе с результатом (в stub/`food_logs` — поле `emoji`); в UI слева от названия (fallback `🍽`).
+
+- Превью (`format_food_result`): `{emoji}  {dish}`, сразу под названием — «Примерная порция: ~N г» (для этикетки — «Порция: N г»).
 
 - FSM: `confirming` | `editing_choice` | `waiting_hint` | `waiting_weight`.
 

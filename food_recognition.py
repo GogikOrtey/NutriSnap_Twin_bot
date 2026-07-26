@@ -100,13 +100,18 @@ PHOTO_PROMPT = """Ты анализируешь фото для учёта ка�
 - recognized — на фото обычная еда, уверенно оцени dish + calories + БЖУ (proteins/fats/carbs).
   portion_g — ВСЕГДА оцени примерный вес порции на фото в граммах (визуально).
   portion_known=false, is_label=false.
-- unclear — на фото похоже на еду, но уверенности нет: dish/calories/БЖУ можно оставить null.
+  emoji — один наиболее подходящий эмодзи для этого блюда (слева от названия).
+- unclear — на фото похоже на еду, но уверенности нет: dish/calories/БЖУ/emoji можно оставить null.
 - no_food — еды нет, или этикетка без читаемых данных о ккал.
 - label — на фото этикетка/состав с читаемыми ккал (и опционально КБЖУ).
   is_label=true. Если указано «на 100 г» / «на порцию X г» — заполни portion_g и portion_known=true.
   Если объём не указан — portion_known=false, portion_g можно не заполнять.
+  emoji — один эмодзи продукта/категории с этикетки (если dish известен).
 - bad_desc — используй ТОЛЬКО если пользователь дал текстовую подсказку, и она явно
   противоречит фото / мешает классификации.
+
+emoji: ровно один символ-эмодзи (например 🍳, 🥗, 🍕, ☕️), без текста и без пробелов.
+  Обязателен при recognized/label, когда заполнен dish.
 
 Числа: calories — целое ккал; proteins/fats/carbs — граммы (float); portion_g — граммы (float)."""
 
@@ -119,6 +124,8 @@ TEXT_PROMPT = """Пользователь описывает еду или ка�
 - status=no_food / label не используй для чистого текста.
 
 Заполни calories (целое). dish и БЖУ — если возможно.
+emoji — один наиболее подходящий эмодзи для блюда (слева от названия); обязателен,
+если заполнен dish. Ровно один символ-эмодзи, без текста.
 portion_g — ВСЕГДА: если пользователь указал вес — используй его; иначе оцени
 типичную/среднюю порцию такого блюда в граммах.
 is_label=false, portion_known=false."""
@@ -162,6 +169,10 @@ class FoodResult(BaseModel):
         description="Ветка результата распознавания"
     )
     dish: str | None = Field(default=None, description="Название блюда/продукта")
+    emoji: str | None = Field(
+        default=None,
+        description="Один эмодзи, наиболее подходящий для блюда (слева от названия)",
+    )
     calories: int | None = Field(default=None, description="Калорийность в ккал")
     proteins: float | None = Field(default=None, description="Белки в граммах")
     fats: float | None = Field(default=None, description="Жиры в граммах")
@@ -281,12 +292,20 @@ def recalc_by_weight(result: FoodResult, weight_g: float) -> FoodResult:
     return FoodResult.model_validate(data)
 
 
+# Эмодзи блюда из FoodResult (fallback 🍽).
+# Используется превью подтверждения и отображением названия.
+def format_result_emoji(result: FoodResult) -> str:
+    emoji = (result.emoji or "").strip()
+    return emoji or "🍽"
+
+
 # Форматирует FoodResult в читаемый блок для пользователя (блюдо + порция + КБЖУ).
 # HTML-разметка (<b>); вызывающий код должен слать с parse_mode="HTML".
 # Используется при показе превью перед подтверждением.
 def format_food_result(result: FoodResult) -> str:
     dish = html.escape(result.dish or "Блюдо")
-    lines = [f"🍽  {dish}"]
+    emoji = format_result_emoji(result)
+    lines = [f"{emoji}  {dish}"]
 
     # Порция всегда сразу под названием: оценка с фото/типичная или с этикетки.
     portion = result.portion_g

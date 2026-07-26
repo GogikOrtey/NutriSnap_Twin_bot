@@ -20,6 +20,7 @@ main.py — точка входа Telegram-бота NutriSnap (@nutrisnap_ultra_
 from __future__ import annotations
 
 import asyncio
+import html
 import os
 from datetime import datetime, timedelta
 from typing import Any
@@ -209,6 +210,7 @@ def _ensure_stub_food_logs(user_id: int) -> None:
         {
             "id": 1,
             "user_id": user_id,
+            "emoji": "🍳",
             "title": "Овсянка с бананом",
             "calories": 420,
             "proteins": 14.0,
@@ -221,6 +223,7 @@ def _ensure_stub_food_logs(user_id: int) -> None:
         {
             "id": 2,
             "user_id": user_id,
+            "emoji": "🍕",
             "title": "Куриная грудка с рисом",
             "calories": 650,
             "proteins": 48.0,
@@ -233,6 +236,7 @@ def _ensure_stub_food_logs(user_id: int) -> None:
         {
             "id": 3,
             "user_id": user_id,
+            "emoji": "☕️",
             "title": "Греческий йогурт",
             "calories": 180,
             "proteins": 15.0,
@@ -336,15 +340,30 @@ def logical_date_with_offset(user: dict[str, Any], offset_days: int) -> str:
     return (base + timedelta(days=offset_days)).strftime("%Y-%m-%d")
 
 
-# Текстовый прогресс-бар ккал: [████░░░░░░░░] 62%.
-# Используется карточкой главного меню и дневника.
-def format_calorie_progress(eaten: int, target: int) -> str:
+# Эмодзи блюда из записи food_logs (fallback 🍽).
+# Используется списками главного меню, дневника, выбора и выгрузки.
+def format_log_emoji(row: dict[str, Any]) -> str:
+    emoji = (row.get("emoji") or "").strip()
+    return emoji or "🍽"
+
+
+# Граммы макронутриента для UI: целое число + суффикс g.
+# Используется строкой БЖУ на карточке дня.
+def format_macro_g(value: float | int) -> str:
+    return f"{int(round(float(value)))}g"
+
+
+# Прогресс-бар ккал: ▓ при недоборе, полные █ при перерасходе.
+# Возвращает (bar_text, pct). Используется format_day_card.
+def format_calorie_bar(eaten: int, target: int) -> tuple[str, int]:
     if target <= 0:
-        return "[░░░░░░░░░░░░] —"
-    pct = min(100, int(round(100 * eaten / target)))
+        return "[░░░░░░░░░░░░]", 0
+    pct = int(round(100 * eaten / target))
+    if eaten > target:
+        return "[" + ("█" * 12) + "]", pct
     filled = min(12, int(round(12 * eaten / target)))
-    bar = "█" * filled + "░" * (12 - filled)
-    return f"[{bar}] {pct}%"
+    bar = "▓" * filled + "░" * (12 - filled)
+    return f"[{bar}]", pct
 
 
 # Время HH:MM из unix created_at в TZ пользователя.
@@ -361,8 +380,8 @@ def format_log_datetime(created_at: int, timezone: str) -> str:
     return dt.strftime("%Y-%m-%d %H:%M")
 
 
-# Текст карточки дня: список блюд + прогресс (или пустой день).
-# Используется главным меню и экраном дневника.
+# Текст карточки дня (HTML): ккал/бар/БЖУ + список записей или пустой день.
+# Используется главным меню и экраном дневника (parse_mode=HTML).
 def format_day_card(
     user: dict[str, Any],
     logged_date: str,
@@ -380,15 +399,53 @@ def format_day_card(
             )
         else:
             lines.append("За этот день записей нет.")
-    else:
-        for row in logs:
-            t = format_log_time(row["created_at"], user["timezone"])
-            lines.append(f"• {t} — {row['title']} ({row['calories']} ккал)")
-        eaten = sum(int(r["calories"] or 0) for r in logs)
-        target = int(user["daily_calories"])
+        return "\n".join(lines)
+
+    eaten = sum(int(r["calories"] or 0) for r in logs)
+    target = int(user["daily_calories"])
+    proteins = sum(float(r.get("proteins") or 0) for r in logs)
+    fats = sum(float(r.get("fats") or 0) for r in logs)
+    carbs = sum(float(r.get("carbs") or 0) for r in logs)
+    bar, pct = format_calorie_bar(eaten, target)
+    over = eaten > target
+
+    lines.append(
+        f"🔥 <b>Калории:</b> <code>{eaten}</code> / <code>{target}</code> ккал "
+        f"({pct}%)"
+    )
+    if over:
+        lines.append(f"<code>{bar}</code>")
         lines.append("")
-        lines.append(f"Итого: {eaten} / {target} ккал")
-        lines.append(format_calorie_progress(eaten, target))
+        # При наборе веса превышение нормы — позитивный «донабор», иначе «перебор».
+        if user.get("goal") == "muscle_gain":
+            over_label = "💪 <b>Донабор:</b>"
+        else:
+            over_label = "⚠️ <b>Перебор:</b>"
+        lines.append(
+            f"{over_label} <code>+{eaten - target} ккал</code>"
+        )
+    else:
+        remaining = target - eaten
+        if remaining > 0:
+            lines.append(f"<code>{bar}</code> (Осталось: {remaining} ккал)")
+        else:
+            lines.append(f"<code>{bar}</code>")
+
+    lines.append(
+        f"🥩 <code>{format_macro_g(proteins)}</code> Б | "
+        f"🥑 <code>{format_macro_g(fats)}</code> Ж | "
+        f"🍞 <code>{format_macro_g(carbs)}</code> У"
+    )
+    lines.append("")
+    lines.append("📋 <b>Записи за день:</b>")
+    for row in logs:
+        t = format_log_time(row["created_at"], user["timezone"])
+        emoji = format_log_emoji(row)
+        dish = html.escape(str(row.get("title") or "Блюдо"))
+        cal = int(row["calories"] or 0)
+        lines.append(
+            f"▫️ <code>{t}</code> {emoji} {dish} — <b>{cal} ккал</b>"
+        )
     return "\n".join(lines)
 
 
@@ -447,7 +504,7 @@ def build_export_txt(
         for row in logs:
             dt = format_log_datetime(row["created_at"], user["timezone"])
             parts.append(
-                f"{dt} | {row['title']}\n"
+                f"{dt} | {format_log_emoji(row)} {row['title']}\n"
                 f"  ккал: {row['calories']}, "
                 f"Б: {row['proteins']} г, Ж: {row['fats']} г, У: {row['carbs']} г, "
                 f"порция: {row['portion_g']} г\n"
@@ -791,7 +848,7 @@ async def show_main_menu(
         today,
         logs,
         is_today=True,
-        title="🏠 Главное меню",
+        title="🏠 <b>Главный экран | Сегодня</b>",
     )
     if stale_ids:
         try:
@@ -799,6 +856,7 @@ async def show_main_menu(
                 text=text,
                 chat_id=message.chat.id,
                 message_id=stale_ids[0],
+                parse_mode="HTML",
             )
             await push_reply_keyboard(message, kb_main_menu())
             mid = (
@@ -815,7 +873,9 @@ async def show_main_menu(
         except Exception:
             pass
 
-    sent = await message.answer(text, reply_markup=kb_main_menu())
+    sent = await message.answer(
+        text, reply_markup=kb_main_menu(), parse_mode="HTML"
+    )
     await state.update_data(**{UI_MESSAGE_ID_KEY: sent.message_id})
     if stale_ids:
         await dismiss_action_prompts(message.bot, message.chat.id, stale_ids)
@@ -845,14 +905,14 @@ async def show_diary(
     logged_date = logical_date_with_offset(user, offset)
     logs = stub_get_food_logs_for_date(user_id, logged_date)
     is_today = offset == 0
-    title = f"📒 Дневник питания — {logged_date}"
+    title = f"📒 <b>Дневник питания</b> — {logged_date}"
     text = format_day_card(user, logged_date, logs, is_today=is_today, title=title)
     nav = kb_diary_nav(offset)
 
     # Inline-навигация: только правка карточки, «Выберите действие:» не трогаем.
     if edit_message is not None:
         try:
-            await edit_message.edit_text(text, reply_markup=nav)
+            await edit_message.edit_text(text, reply_markup=nav, parse_mode="HTML")
             await state.update_data(**{UI_MESSAGE_ID_KEY: edit_message.message_id})
             return
         except Exception:
@@ -860,7 +920,7 @@ async def show_diary(
 
     # Reply-вход: новая карточка + «Выберите действие:»; старое служебное — edit без пыли.
     stale_ids = await pop_action_prompt_ids(state)
-    card = await message.answer(text, reply_markup=nav)
+    card = await message.answer(text, reply_markup=nav, parse_mode="HTML")
     actions = await message.answer("Выберите действие:", reply_markup=kb_diary())
     await state.update_data(
         **{
@@ -951,7 +1011,10 @@ def format_numbered_logs(
     lines: list[str] = []
     for i, row in enumerate(logs, start=1):
         t = format_log_time(row["created_at"], user["timezone"])
-        lines.append(f"{i}. {t} — {row['title']} ({row['calories']} ккал)")
+        emoji = format_log_emoji(row)
+        lines.append(
+            f"{i}. {t} — {emoji} {row['title']} ({row['calories']} ккал)"
+        )
     return "\n".join(lines)
 
 
