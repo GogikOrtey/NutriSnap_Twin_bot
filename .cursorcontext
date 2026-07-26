@@ -11,7 +11,7 @@ Telegram-бот для учёта калорий по фото/тексту (Nut
 ```
 NutriSnap_Twin_bot/
 ├── main.py                # Точка входа: /start, главное меню, stub БД (🔰), роутеры
-├── initial_survey.py      # Первичный опрос (онбординг); пока заглушка
+├── initial_survey.py      # Первичный опрос (онбординг): приветствие → профиль → цель
 ├── food_recognition.py    # FSM-флоу распознавания еды (Gemini + confirm UI)
 ├── test_3_local.py        # Локальный прототип анализа фото (без Telegram)
 ├── test_4_tg_bot.py       # Минимальный каркас бота (/start + кнопка)
@@ -30,7 +30,9 @@ main.py
   ├── Bot + Dispatcher + MemoryStorage
   ├── /start → start_initial_survey (если INITIAL_SURVEY_ENABLED) иначе show_main_menu
   ├── include_router(menu_router)          # Reply-меню, дневник, настройки, выгрузка
-  ├── include_router(setup_initial_survey())  # первичный опрос (заглушка)
+  ├── include_router(setup_initial_survey(on_complete=_on_survey_complete))
+  │     └── welcome → category → name/gender/height/weight/age/activity/goal
+  │           → stub_set_profile → show_main_menu + RECOGNIZE_HINT_TEXT
   └── include_router(setup_food_recognition(..., on_food_saved=_on_food_saved))
         └── food_recognition.py (Router: фото/текст/callbacks/FSM)
             ├── NotMenuButtonFilter — не слать тексты кнопок меню в Gemini
@@ -52,7 +54,8 @@ main.py
 - Inline только в дневнике: `diary:prev` / `diary:next` (◀️ Вчера / ▶️ Завтра). На текущем дне (`diary_offset >= 0`) кнопка «Завтра» скрыта.
 - Навигация меню: Reply → новое сообщение; если есть «Выберите действие:» — оно превращается в новый экран через `edit_text` (без анимации пыли, как «Анализирую…» → превью). Inline «Вчера/Завтра» → `edit_text` карточки. Хвосты служебных — `dismiss_action_prompts` (edit в невидимый символ, не delete).
 - Логическая дата: `timezone` + `day_change_hour` (по умолчанию Europe/Moscow, 4:00).
-- БД не подключена: `stub_get_*` / `stub_set_*` / `stub_delete_*` / `stub_send_feedback` / reminders-stub с маркером `🔰` и in-memory данными (3 блюда на «сегодня», поле `emoji`; `reminders` пустой до добавления пользователем).
+- БД не подключена: `stub_get_*` / `stub_set_*` / `stub_set_profile` / `stub_delete_*` / `stub_send_feedback` / reminders-stub с маркером `🔰` и in-memory данными (3 блюда на «сегодня», поле `emoji`; `reminders` пустой до добавления пользователем).
+- `RECOGNIZE_HINT_TEXT` — общий текст памятки «Распознать» (кнопка меню и финал опроса).
 - Выгрузка журнала → `.txt` (`BufferedInputFile`) с промпт-шапкой профиля; периоды: день / вчера / 7 дней / окна 0–30 / 30–60 / 60–90.
 - Настройки: час смены суток, **🔔 Напоминания и Витамины**, выгрузка, отзыв (текст/фото, stub без email), «Изменить данные профиля».
 - Напоминания (`reminders`): title + окно (Завтрак 07–11 / Обед 12–16 / Ужин 17–22) + `min_calories` (0 или 250); список с вкл/выкл и удалением. После ✅ еды — `stub_trigger_reminders_for_food` → сообщение «🔔 Нужно: …» с inline «⏰ На следующую еду» / «✅ Понятно». Заморозка по `last_active_at` (>3 дня) и «пропущено по концу окна» — stub/cron позже (`stub_check_missed_reminders`).
@@ -62,9 +65,12 @@ main.py
 
 ### `initial_survey.py`
 
-- Router `initial_survey` + FSM `SurveyFlow.q1`.
-- `start_initial_survey(message, state)` — сброс FSM, состояние `q1`, сообщение «Первый вопрос…» + `ReplyKeyboardRemove`.
-- `setup_initial_survey()` → router. Пока без хендлеров ответов; шаги опроса добавим позже (см. `add_info.md`).
+- Router `initial_survey` + FSM `SurveyFlow`: `welcome` → `category` → `name` → `gender` → `height` → `weight` → `age` → `activity` → `goal`.
+- Приветствие (HTML, бренд NutriClick) + кнопка `🚀 Начать короткий опрос`.
+- Категория: Люди (ккал) → дальше; Роботы/Нейросети → «в разработке», остаёмся на шаге.
+- Выбор — Reply-кнопки; имя/рост/вес/возраст — текст с валидацией. Активность = коэффициенты `1.2…1.9`; цель = `weight_loss` / `muscle_gain` / `maintain`.
+- `setup_initial_survey(on_complete=...)` → router; `on_complete` в main: `stub_set_profile` → `show_main_menu` → `RECOGNIZE_HINT_TEXT` (без смены клавиатуры на «Распознать»).
+- Фото во время опроса: ответ «Сначала закончите короткий опрос». Расчёт `daily_calories` — позже.
 
 ### `food_recognition.py`
 
@@ -73,7 +79,7 @@ main.py
   `gemini-flash-latest` → `gemini-3.5-flash` → `gemini-3.1-flash-lite` → `gemini-2.5-flash`.
 - Схема `FoodResult`: `status`, `dish`, `emoji`, `calories`, `proteins`, `fats`, `carbs`, `portion_g`, `portion_known`, `is_label`.
 - Статусы ИИ: `recognized` | `unclear` | `no_food` | `label` | `bad_desc`.
-- Входы: фото / фото+caption / только текст (`analyze_food_photo`, `analyze_food_text`).
+- Входы: фото / фото+caption / только текст (`analyze_food_photo`, `analyze_food_text`). Фото и текст: `StateFilter(None, FoodFlow.confirming)` — не перехватывать FSM опроса.
 - `portion_g` обязателен при `recognized`: с фото — оценка веса порции; с текста — указанный вес или типичная средняя порция блюда.
 - `emoji` — один эмодзи блюда (промпт + схема); сохраняется вместе с результатом (в stub/`food_logs` — поле `emoji`); в UI слева от названия (fallback `🍽`).
 - Превью (`format_food_result`): `{emoji}  {dish}`, сразу под названием — «Примерная порция: ~N г» (для этикетки — «Порция: N г»).
@@ -104,7 +110,8 @@ main.py
 ## Планируемое развитие
 
 - Подключить реальную БД вместо `🔰` stub в `main.py` и `save_to_console`.
-- Доделать первичный опрос в `initial_survey.py` (категории / профиль); хранить в БД «прошёл ли опрос»; выключить `INITIAL_SURVEY_ENABLED` и роутить по БД.
+- Хранить в БД «прошёл ли опрос»; выключить `INITIAL_SURVEY_ENABLED` и роутить по БД; формула целевых ккал после опроса.
+- Подключить «Обновить данные пользователя» к `start_initial_survey`.
 - Планировщик «пропущенных» напоминаний по концу окна + сброс `is_triggered_today` по `day_change_hour`.
 - Дневной лимит распознаваний (на ветке «Неверно» → подсказка).
 - Форма редактирования блюда (сейчас только выбор + stub).
@@ -112,7 +119,7 @@ main.py
 ## Важные договорённости
 
 - Для функций — краткий комментарий-аннотация: зачем, что делает и где используется.
-- В `main.py` и `food_recognition.py` сверху файла — модульный docstring; при изменениях обновлять.
+- В `main.py`, `food_recognition.py` и `initial_survey.py` сверху файла — модульный docstring; при изменениях обновлять.
 - Места будущих SQL-запросов помечать `🔰` (поиск по репозиторию).
 - Не опираться на код в `Старое/` при новых изменениях.
 - Секреты только в `.env`.

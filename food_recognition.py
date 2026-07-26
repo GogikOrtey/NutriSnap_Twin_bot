@@ -705,8 +705,9 @@ async def handle_ai_result(
 
 #region Обработчик фото
 # Обработчик фото: анализ через Gemini, ветки status, confirm UI.
+# StateFilter как у текста — не сбрасывать FSM опроса / других состояний.
 # Регистрируется на router через декоратор.
-@router.message(F.photo)
+@router.message(StateFilter(None, FoodFlow.confirming), F.photo)
 async def on_photo(message: Message, state: FSMContext, bot: Bot) -> None:
     await state.clear()
     # Скрываем «🏠» отдельно: статус должен оставаться editable для превью.

@@ -119,6 +119,20 @@ CALLBACK_DIARY_NEXT = "diary:next"
 CALLBACK_REM_SNOOZE_PREFIX = "rem:snooze:"
 CALLBACK_REM_OK_PREFIX = "rem:ok:"
 
+# Памятка экрана «Распознать» — также шлётся после завершения первичного опроса.
+RECOGNIZE_HINT_TEXT = (
+    "💡 Отправлять фото или текст можно в любой момент — кнопка не обязательна\n"
+    "\n"
+    "✨ Что умеет бот:\n"
+    "⠀⠀⠀📸 Оценить блюдо по фото (можно с подписью)\n"
+    "⠀⠀⠀📝 Разобрать текстовое описание / ккал\n"
+    "⠀⠀⠀🏷️ Прочитать этикетку с пищевой ценностью\n"
+    "\n"
+    "📋 После оценки появится превью — подтвердите или поправьте результат\n"
+    "\n"
+    "🚀 Можешь начинать распознавание прямо сейчас — отправь в чат фото или текст описания еды:"
+)
+
 # Шаблоны окон напоминаний (time_start, time_end) — каждый день, без выбора дней недели.
 REMINDER_WINDOWS: dict[str, tuple[str, str]] = {
     BTN_REM_WINDOW_BREAKFAST: ("07:00", "11:00"),
@@ -372,6 +386,32 @@ def stub_set_daily_calories(user_id: int, calories: int) -> None:
     # 🔰 UPDATE users SET daily_calories = ? WHERE id = ?
     user = stub_get_user(user_id)
     user["daily_calories"] = calories
+
+
+# 🔰 Запись полей профиля из первичного опроса (без пересчёта daily_calories).
+# Используется on_survey_complete после прохождения initial_survey.
+def stub_set_profile(
+    user_id: int,
+    *,
+    first_name: str,
+    gender: str,
+    age: int,
+    height: float,
+    weight: float,
+    activity_level: float,
+    goal: str,
+) -> None:
+    # 🔰 UPDATE users SET first_name=?, gender=?, age=?, height=?, weight=?,
+    #    activity_level=?, goal=? WHERE id=?
+    user = stub_get_user(user_id)
+    user["first_name"] = first_name
+    user["gender"] = gender
+    user["age"] = age
+    user["height"] = height
+    user["weight"] = weight
+    user["activity_level"] = activity_level
+    user["goal"] = goal
+    user["last_active_at"] = int(time.time())
 
 
 # 🔰 Заглушка отправки отзыва разработчику (вместо email/SMTP).
@@ -1274,19 +1314,9 @@ async def show_diary(
 async def show_recognize(message: Message, state: FSMContext) -> None:
     await state.set_state(None)
     await state.update_data(menu_screen="recognize")
-    text = (
-        "💡 Отправлять фото или текст можно в любой момент — кнопка не обязательна\n"
-        "\n"
-        "✨ Что умеет бот:\n"
-        "⠀⠀⠀📸 Оценить блюдо по фото (можно с подписью)\n"
-        "⠀⠀⠀📝 Разобрать текстовое описание / ккал\n"
-        "⠀⠀⠀🏷️ Прочитать этикетку с пищевой ценностью\n"
-        "\n"
-        "📋 После оценки появится превью — подтвердите или поправьте результат\n"
-        "\n"
-        "🚀 Можешь начинать распознавание прямо сейчас — отправь в чат фото или текст описания еды:"
+    await replace_ui(
+        message, state, RECOGNIZE_HINT_TEXT, reply_markup=kb_recognize()
     )
-    await replace_ui(message, state, text, reply_markup=kb_recognize())
 
 
 # Экран настроек.
@@ -1473,8 +1503,30 @@ async def _on_food_saved(
     await notify_reminders_after_food(user_id, calories, bot, chat_id)
 
 
+# Колбэк после первичного опроса: stub-профиль → главное меню → памятка «Распознать».
+# Передаётся в initial_survey.setup_initial_survey(on_complete=...).
+async def _on_survey_complete(
+    message: Message,
+    state: FSMContext,
+    profile: dict[str, Any],
+) -> None:
+    user_id = message.from_user.id if message.from_user else 0
+    stub_set_profile(
+        user_id,
+        first_name=str(profile["first_name"]),
+        gender=str(profile["gender"]),
+        age=int(profile["age"]),
+        height=float(profile["height"]),
+        weight=float(profile["weight"]),
+        activity_level=float(profile["activity_level"]),
+        goal=str(profile["goal"]),
+    )
+    await show_main_menu(message, state)
+    await message.answer(RECOGNIZE_HINT_TEXT)
+
+
 dp.include_router(menu_router)
-dp.include_router(setup_initial_survey())
+dp.include_router(setup_initial_survey(on_complete=_on_survey_complete))
 dp.include_router(
     setup_food_recognition(
         storage,
