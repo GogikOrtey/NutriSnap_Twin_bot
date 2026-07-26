@@ -19,10 +19,19 @@ from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 
 #region Константы кнопок и тексты
 BTN_START_SURVEY = "🚀 Начать короткий опрос"
+CALLBACK_START_SURVEY = "survey:start"
 
 BTN_CAT_PEOPLE = "👤 Люди (ккал)"
 BTN_CAT_ROBOTS = "🤖 Роботы (Вт/ч)"
@@ -99,7 +108,7 @@ WELCOME_TEXT = (
     "под твои актуальные цели"
 )
 
-# Колбэк после успешного опроса: (message, state, profile_dict) → сохранить + меню.
+# Колбэк после успешного опроса: (message, state, profile_dict) → сохранить + «Распознать».
 OnSurveyCompleteCallback = Callable[
     [Message, FSMContext, dict[str, Any]],
     Awaitable[None],
@@ -125,11 +134,12 @@ _on_survey_complete: OnSurveyCompleteCallback | None = None
 #endregion
 
 #region Клавиатуры
-# Reply-кнопка старта опроса после приветствия.
-def kb_start_survey() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=BTN_START_SURVEY)]],
-        resize_keyboard=True,
+# Inline-кнопка старта опроса под приветственным сообщением.
+def kb_start_survey() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=BTN_START_SURVEY, callback_data=CALLBACK_START_SURVEY)]
+        ]
     )
 
 
@@ -229,6 +239,12 @@ def profile_from_state_data(data: dict[str, Any]) -> dict[str, Any]:
 async def start_initial_survey(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(SurveyFlow.welcome)
+    # Снимаем старую Reply-клавиатуру (inline её не убирает).
+    stub = await message.answer("\u2060", reply_markup=ReplyKeyboardRemove())
+    try:
+        await stub.delete()
+    except Exception:
+        pass
     await message.answer(
         WELCOME_TEXT,
         parse_mode="HTML",
@@ -247,11 +263,20 @@ def setup_initial_survey(
 #endregion
 
 #region Хендлеры шагов
-# Старт опроса по кнопке → вопрос про категорию учёта.
-@router.message(SurveyFlow.welcome, F.text == BTN_START_SURVEY)
-async def on_start_survey(message: Message, state: FSMContext) -> None:
+# Старт опроса по inline-кнопке под приветствием → категория учёта.
+@router.callback_query(SurveyFlow.welcome, F.data == CALLBACK_START_SURVEY)
+async def on_start_survey(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
     await state.set_state(SurveyFlow.category)
-    await message.answer(
+    target = callback.message
+    if target is None:
+        return
+    await target.answer(
         "Выберите свою категорию учёта",
         reply_markup=kb_category(),
     )
@@ -357,7 +382,7 @@ async def on_activity(message: Message, state: FSMContext) -> None:
     )
 
 
-# Цель → сохранение профиля через on_complete (меню + памятка «Распознать»).
+# Цель → сохранение профиля через on_complete (экран «Распознать», ждём фото/текст).
 @router.message(SurveyFlow.goal, F.text.in_(set(GOAL_BY_BTN)))
 async def on_goal(message: Message, state: FSMContext) -> None:
     goal = GOAL_BY_BTN[message.text or ""]
@@ -384,8 +409,7 @@ async def on_survey_photo(message: Message, state: FSMContext) -> None:
 @router.message(SurveyFlow.welcome, F.text)
 async def on_welcome_other(message: Message, state: FSMContext) -> None:
     await message.answer(
-        "Нажмите кнопку ниже, чтобы начать короткий опрос",
-        reply_markup=kb_start_survey(),
+        "Нажмите кнопку под приветствием, чтобы начать короткий опрос"
     )
 
 

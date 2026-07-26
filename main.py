@@ -119,7 +119,7 @@ CALLBACK_DIARY_NEXT = "diary:next"
 CALLBACK_REM_SNOOZE_PREFIX = "rem:snooze:"
 CALLBACK_REM_OK_PREFIX = "rem:ok:"
 
-# Памятка экрана «Распознать» — также шлётся после завершения первичного опроса.
+# Памятка экрана «Распознать» — также открывается после завершения первичного опроса.
 RECOGNIZE_HINT_TEXT = (
     "💡 Отправлять фото или текст можно в любой момент — кнопка не обязательна\n"
     "\n"
@@ -1310,7 +1310,7 @@ async def show_diary(
 
 
 # Памятка «Распознать» без запуска анализа.
-# Используется кнопкой 🔍 Распознать.
+# Используется кнопкой 🔍 Распознать и финалом первичного опроса.
 async def show_recognize(message: Message, state: FSMContext) -> None:
     await state.set_state(None)
     await state.update_data(menu_screen="recognize")
@@ -1503,7 +1503,7 @@ async def _on_food_saved(
     await notify_reminders_after_food(user_id, calories, bot, chat_id)
 
 
-# Колбэк после первичного опроса: stub-профиль → главное меню → памятка «Распознать».
+# Колбэк после первичного опроса: stub-профиль → экран «Распознать» (ждём фото/текст).
 # Передаётся в initial_survey.setup_initial_survey(on_complete=...).
 async def _on_survey_complete(
     message: Message,
@@ -1521,8 +1521,8 @@ async def _on_survey_complete(
         activity_level=float(profile["activity_level"]),
         goal=str(profile["goal"]),
     )
-    await show_main_menu(message, state)
-    await message.answer(RECOGNIZE_HINT_TEXT)
+    await state.clear()
+    await show_recognize(message, state)
 
 
 dp.include_router(menu_router)

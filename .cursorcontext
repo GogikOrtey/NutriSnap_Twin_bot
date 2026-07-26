@@ -32,7 +32,7 @@ main.py
   ├── include_router(menu_router)          # Reply-меню, дневник, настройки, выгрузка
   ├── include_router(setup_initial_survey(on_complete=_on_survey_complete))
   │     └── welcome → category → name/gender/height/weight/age/activity/goal
-  │           → stub_set_profile → show_main_menu + RECOGNIZE_HINT_TEXT
+  │           → stub_set_profile → show_recognize (клавиатура «Назад», ждём фото/текст)
   └── include_router(setup_food_recognition(..., on_food_saved=_on_food_saved))
         └── food_recognition.py (Router: фото/текст/callbacks/FSM)
             ├── NotMenuButtonFilter — не слать тексты кнопок меню в Gemini
@@ -55,7 +55,7 @@ main.py
 - Навигация меню: Reply → новое сообщение; если есть «Выберите действие:» — оно превращается в новый экран через `edit_text` (без анимации пыли, как «Анализирую…» → превью). Inline «Вчера/Завтра» → `edit_text` карточки. Хвосты служебных — `dismiss_action_prompts` (edit в невидимый символ, не delete).
 - Логическая дата: `timezone` + `day_change_hour` (по умолчанию Europe/Moscow, 4:00).
 - БД не подключена: `stub_get_*` / `stub_set_*` / `stub_set_profile` / `stub_delete_*` / `stub_send_feedback` / reminders-stub с маркером `🔰` и in-memory данными (3 блюда на «сегодня», поле `emoji`; `reminders` пустой до добавления пользователем).
-- `RECOGNIZE_HINT_TEXT` — общий текст памятки «Распознать» (кнопка меню и финал опроса).
+- `RECOGNIZE_HINT_TEXT` — общий текст памятки «Распознать» (кнопка меню и финал опроса через `show_recognize`).
 - Выгрузка журнала → `.txt` (`BufferedInputFile`) с промпт-шапкой профиля; периоды: день / вчера / 7 дней / окна 0–30 / 30–60 / 60–90.
 - Настройки: час смены суток, **🔔 Напоминания и Витамины**, выгрузка, отзыв (текст/фото, stub без email), «Изменить данные профиля».
 - Напоминания (`reminders`): title + окно (Завтрак 07–11 / Обед 12–16 / Ужин 17–22) + `min_calories` (0 или 250); список с вкл/выкл и удалением. После ✅ еды — `stub_trigger_reminders_for_food` → сообщение «🔔 Нужно: …» с inline «⏰ На следующую еду» / «✅ Понятно». Заморозка по `last_active_at` (>3 дня) и «пропущено по концу окна» — stub/cron позже (`stub_check_missed_reminders`).
@@ -66,10 +66,10 @@ main.py
 ### `initial_survey.py`
 
 - Router `initial_survey` + FSM `SurveyFlow`: `welcome` → `category` → `name` → `gender` → `height` → `weight` → `age` → `activity` → `goal`.
-- Приветствие (HTML, бренд NutriClick) + кнопка `🚀 Начать короткий опрос`.
+- Приветствие (HTML, бренд NutriClick) + inline-кнопка `🚀 Начать короткий опрос` (`survey:start`) под сообщением.
 - Категория: Люди (ккал) → дальше; Роботы/Нейросети → «в разработке», остаёмся на шаге.
 - Выбор — Reply-кнопки; имя/рост/вес/возраст — текст с валидацией. Активность = коэффициенты `1.2…1.9`; цель = `weight_loss` / `muscle_gain` / `maintain`.
-- `setup_initial_survey(on_complete=...)` → router; `on_complete` в main: `stub_set_profile` → `show_main_menu` → `RECOGNIZE_HINT_TEXT` (без смены клавиатуры на «Распознать»).
+- `setup_initial_survey(on_complete=...)` → router; `on_complete` в main: `stub_set_profile` → `show_recognize` (памятка + reply «⬅️ Назад», без главного экрана).
 - Фото во время опроса: ответ «Сначала закончите короткий опрос». Расчёт `daily_calories` — позже.
 
 ### `food_recognition.py`
