@@ -511,39 +511,46 @@ def kb_diary_nav(offset: int = 0) -> InlineKeyboardMarkup:
 #region UI: экраны меню
 # Reply-кнопки → всегда новое сообщение (edit путает).
 # Inline под карточкой дневника → edit_text.
-# «Выберите действие:» — служебное; старые такие сообщения удаляем.
+# «Выберите действие:» — служебное; старые такие удаляем уже ПОСЛЕ отправки нового экрана.
 UI_MESSAGE_ID_KEY = "ui_message_id"
 UI_ACTION_MSG_IDS_KEY = "ui_action_msg_ids"
 
 
-# Удаляет ранее отправленные «Выберите действие:» (и подобные служебные).
-# Используется при уходе с экрана дневника и перед новым показом дневника.
-async def clear_action_prompts(message: Message, state: FSMContext) -> None:
+# Забирает id служебных «Выберите действие:» из FSM (список в state очищается).
+# Используется replace_ui / show_diary / show_main_menu перед показом нового экрана.
+async def pop_action_prompt_ids(state: FSMContext) -> list[int]:
     data = await state.get_data()
     ids: list[int] = list(data.get(UI_ACTION_MSG_IDS_KEY) or [])
-    if not ids:
-        return
-    bot = message.bot
-    chat_id = message.chat.id
-    for mid in ids:
+    if ids:
+        await state.update_data(**{UI_ACTION_MSG_IDS_KEY: []})
+    return ids
+
+
+# Тихо удаляет сообщения по id (ошибки игнорируем).
+# Используется после отправки нового экрана, чтобы не тормозить ответ пользователю.
+async def delete_messages_silent(
+    bot: Bot, chat_id: int, message_ids: list[int]
+) -> None:
+    for mid in message_ids:
         try:
             await bot.delete_message(chat_id, mid)
         except Exception:
             pass
-    await state.update_data(**{UI_ACTION_MSG_IDS_KEY: []})
 
 
-# Новый экран по Reply-кнопке: шлём новое сообщение, править старое не надо.
-# Заодно чистит служебные «Выберите действие:». Используется show_* и промптами.
+# Новый экран по Reply-кнопке: сначала ответ, потом чистка старых «Выберите действие:».
+# Используется show_* и промптами подменю.
 async def replace_ui(
     message: Message,
     state: FSMContext,
     text: str,
     reply_markup: ReplyKeyboardMarkup | InlineKeyboardMarkup | None = None,
 ) -> Message:
-    await clear_action_prompts(message, state)
+    stale_ids = await pop_action_prompt_ids(state)
     sent = await message.answer(text, reply_markup=reply_markup)
     await state.update_data(**{UI_MESSAGE_ID_KEY: sent.message_id})
+    if stale_ids:
+        await delete_messages_silent(message.bot, message.chat.id, stale_ids)
     return sent
 #endregion
 
@@ -553,7 +560,7 @@ async def replace_ui(
 async def show_main_menu(
     message: Message, state: FSMContext, user_id: int | None = None
 ) -> None:
-    await clear_action_prompts(message, state)
+    stale_ids = await pop_action_prompt_ids(state)
     await state.clear()
     await state.update_data(diary_offset=0, export_return="main", menu_screen="main")
     uid = user_id if user_id is not None else (message.from_user.id if message.from_user else 0)
@@ -568,7 +575,10 @@ async def show_main_menu(
         is_today=True,
         title="🏠 Главное меню",
     )
-    await replace_ui(message, state, text, reply_markup=kb_main_menu())
+    sent = await message.answer(text, reply_markup=kb_main_menu())
+    await state.update_data(**{UI_MESSAGE_ID_KEY: sent.message_id})
+    if stale_ids:
+        await delete_messages_silent(message.bot, message.chat.id, stale_ids)
 
 
 # Показывает дневник за дату с diary_offset + inline-навигацию.
@@ -608,9 +618,8 @@ async def show_diary(
         except Exception:
             pass
 
-    # Reply-вход в дневник: новая карточка + служебная строка с Reply-клавиатурой
-    # (Telegram не смешивает Reply и Inline в одном сообщении).
-    await clear_action_prompts(message, state)
+    # Reply-вход: сначала новая карточка + «Выберите действие:», потом удаляем старые служебные.
+    stale_ids = await pop_action_prompt_ids(state)
     card = await message.answer(text, reply_markup=nav)
     actions = await message.answer("Выберите действие:", reply_markup=kb_diary())
     await state.update_data(
@@ -619,6 +628,8 @@ async def show_diary(
             UI_ACTION_MSG_IDS_KEY: [actions.message_id],
         }
     )
+    if stale_ids:
+        await delete_messages_silent(message.bot, message.chat.id, stale_ids)
 
 
 # Памятка «Распознать» без запуска анализа.
