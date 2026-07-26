@@ -62,11 +62,11 @@ BTN_CAT_NEURAL = "🧠 Нейросети (токены)"
 BTN_GENDER_MALE = "👨 Мужской"
 BTN_GENDER_FEMALE = "👩 Женский"
 
-BTN_ACT_SEDENTARY = "Сидячий образ жизни"
-BTN_ACT_LIGHT = "Лёгкая активность"
-BTN_ACT_MODERATE = "Умеренная активность"
-BTN_ACT_HIGH = "Высокая активность"
-BTN_ACT_VERY_HIGH = "Очень высокая активность"
+BTN_ACT_SEDENTARY = "🪑 Сидячий образ жизни"
+BTN_ACT_LIGHT = "🚶 Лёгкая активность"
+BTN_ACT_MODERATE = "🏃 Умеренная активность"
+BTN_ACT_HIGH = "🏋️ Высокая активность"
+BTN_ACT_VERY_HIGH = "⚡ Очень высокая активность"
 
 BTN_GOAL_LOSS = "📉 Похудение"
 BTN_GOAL_GAIN = "📈 Набор веса"
@@ -281,8 +281,8 @@ def kb_calories_confirm() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text=BTN_KCAL_OK, callback_data=CALLBACK_KCAL_OK),
                 InlineKeyboardButton(text=BTN_KCAL_EDIT, callback_data=CALLBACK_KCAL_EDIT),
+                InlineKeyboardButton(text=BTN_KCAL_OK, callback_data=CALLBACK_KCAL_OK),
             ]
         ]
     )
@@ -584,8 +584,9 @@ async def on_name(message: Message, state: FSMContext) -> None:
     await state.update_data(survey_first_name=name)
     await state.set_state(SurveyFlow.gender)
     await message.answer(
-        "Укажите пол",
+        "Укажите <b>пол</b>",
         reply_markup=kb_gender(),
+        parse_mode="HTML",
     )
 
 
@@ -596,8 +597,9 @@ async def on_gender(message: Message, state: FSMContext) -> None:
     await state.update_data(survey_gender=gender)
     await state.set_state(SurveyFlow.height)
     await message.answer(
-        "Укажите рост в сантиметрах (например, 178)",
+        "Укажите <b>рост</b> в сантиметрах (например, 178)",
         reply_markup=ReplyKeyboardRemove(),
+        parse_mode="HTML",
     )
 
 
@@ -606,11 +608,17 @@ async def on_gender(message: Message, state: FSMContext) -> None:
 async def on_height(message: Message, state: FSMContext) -> None:
     height = parse_positive_float(message.text or "")
     if height is None or height < 50 or height > 300:
-        await message.answer("Введите рост числом в см (например, 178)")
+        await message.answer(
+            "Введите <b>рост</b> числом в см (например, 178)",
+            parse_mode="HTML",
+        )
         return
     await state.update_data(survey_height=height)
     await state.set_state(SurveyFlow.weight)
-    await message.answer("Укажите вес в килограммах (например, 75)")
+    await message.answer(
+        "Укажите <b>вес</b> в килограммах (например, 75)",
+        parse_mode="HTML",
+    )
 
 
 # Вес → вопрос про возраст.
@@ -618,11 +626,17 @@ async def on_height(message: Message, state: FSMContext) -> None:
 async def on_weight(message: Message, state: FSMContext) -> None:
     weight = parse_positive_float(message.text or "")
     if weight is None or weight < 20 or weight > 400:
-        await message.answer("Введите вес числом в кг (например, 75)")
+        await message.answer(
+            "Введите <b>вес</b> числом в кг (например, 75)",
+            parse_mode="HTML",
+        )
         return
     await state.update_data(survey_weight=weight)
     await state.set_state(SurveyFlow.age)
-    await message.answer("Укажите возраст (полных лет)")
+    await message.answer(
+        "Укажите <b>возраст</b> (полных лет)",
+        parse_mode="HTML",
+    )
 
 
 # Возраст → вопрос про активность.
@@ -804,8 +818,9 @@ async def on_category_other(message: Message, state: FSMContext) -> None:
 @router.message(SurveyFlow.gender, F.text)
 async def on_gender_other(message: Message, state: FSMContext) -> None:
     await message.answer(
-        "Выберите пол кнопкой ниже",
+        "Выберите <b>пол</b> кнопкой ниже",
         reply_markup=kb_gender(),
+        parse_mode="HTML",
     )
 
 
