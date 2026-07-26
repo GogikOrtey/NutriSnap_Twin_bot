@@ -3,15 +3,19 @@ initial_survey.py — первичный опрос (онбординг) NutriSn
 
 Зачем нужен файл
 ----------------
-FSM-флоу стартового опроса: приветствие, категория учёта, профиль, цель.
+FSM-флоу стартового опроса: приветствие → категория → профиль → цель →
+часовой пояс → подтверждение целевых ккал → on_complete (экран «Распознать»).
 Подключается из main.py через setup_initial_survey(on_complete=...).
 При активном флаге INITIAL_SURVEY_ENABLED /start ведёт сюда вместо главного меню.
 
-Позже: проверка в БД, прошёл ли пользователь опрос; расчёт целевых ккал.
+Позже: проверка в БД, прошёл ли пользователь опрос.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
+import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -28,10 +32,28 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
 )
+from dotenv import load_dotenv
+from geopy.geocoders import Nominatim
+from google import genai
+from pydantic import BaseModel, Field
+from timezonefinder import TimezoneFinder
 
 #region Константы кнопок и тексты
+load_dotenv()
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+REQUEST_TIMEOUT_MS = 10_000
+MODELS_QUEUE = [
+    "gemini-flash-latest",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
+]
+
 BTN_START_SURVEY = "🚀 Начать короткий опрос"
 CALLBACK_START_SURVEY = "survey:start"
+CALLBACK_KCAL_OK = "survey:kcal_ok"
+CALLBACK_KCAL_EDIT = "survey:kcal_edit"
 
 BTN_CAT_PEOPLE = "👤 Люди (ккал)"
 BTN_CAT_ROBOTS = "🤖 Роботы (Вт/ч)"
@@ -49,6 +71,15 @@ BTN_ACT_VERY_HIGH = "Очень высокая активность"
 BTN_GOAL_LOSS = "📉 Похудение"
 BTN_GOAL_GAIN = "📈 Набор веса"
 BTN_GOAL_MAINTAIN = "⚖️ Просто отслеживание"
+
+BTN_TZ_LOCATION = "📍 Поделиться локацией"
+BTN_TZ_MOSCOW = "🏙 Москва / СПб (UTC+3)"
+BTN_TZ_EKAT = "🏔 Екатеринбург (UTC+5)"
+BTN_TZ_VLAD = "🌊 Владивосток (UTC+10)"
+BTN_TZ_OTHER = "🌍 Другой город..."
+
+BTN_KCAL_OK = "✅ Подтвердить"
+BTN_KCAL_EDIT = "✏️ Редактировать"
 
 GENDER_BY_BTN: dict[str, str] = {
     BTN_GENDER_MALE: "male",
@@ -68,6 +99,24 @@ GOAL_BY_BTN: dict[str, str] = {
     BTN_GOAL_GAIN: "muscle_gain",
     BTN_GOAL_MAINTAIN: "maintain",
 }
+
+TIMEZONE_BY_BTN: dict[str, str] = {
+    BTN_TZ_MOSCOW: "Europe/Moscow",
+    BTN_TZ_EKAT: "Asia/Yekaterinburg",
+    BTN_TZ_VLAD: "Asia/Vladivostok",
+}
+
+GOAL_KCAL_FACTOR: dict[str, float] = {
+    "weight_loss": 0.85,
+    "muscle_gain": 1.15,
+    "maintain": 1.0,
+}
+
+KCAL_FORMULA_MIN = 1200
+KCAL_FORMULA_MAX = 5000
+KCAL_EDIT_MIN = 800
+KCAL_EDIT_MAX = 10_000
+KCAL_FALLBACK_DEFAULT = 2000
 
 WELCOME_TEXT = (
     "👋 Привет! Я NutriClick — твой помощник по учёту калорий.\n"
@@ -108,6 +157,15 @@ WELCOME_TEXT = (
     "под твои актуальные цели"
 )
 
+TIMEZONE_PROMPT_TEXT = (
+    "🌍 Укажи свой часовой пояс:\n"
+    "Это нужно, чтобы бот точно знал, когда у тебя наступает новый день "
+    "(в 4:00 утра) и присылал напоминания вовремя.\n"
+    "\n"
+    "📍 Поделиться локацией — быстро и просто. "
+    "Координаты не храним: они нужны только чтобы определить часовой пояс"
+)
+
 # Колбэк после успешного опроса: (message, state, profile_dict) → сохранить + «Распознать».
 OnSurveyCompleteCallback = Callable[
     [Message, FSMContext, dict[str, Any]],
@@ -115,8 +173,8 @@ OnSurveyCompleteCallback = Callable[
 ]
 #endregion
 
-#region FSM и Router
-# Состояния первичного опроса (приветствие → профиль → цель).
+#region FSM, Gemini, гео
+# Состояния первичного опроса (приветствие → профиль → timezone → ккал).
 class SurveyFlow(StatesGroup):
     welcome = State()
     category = State()
@@ -127,10 +185,22 @@ class SurveyFlow(StatesGroup):
     age = State()
     activity = State()
     goal = State()
+    timezone = State()
+    timezone_city = State()
+    calories_confirm = State()
+    calories_edit = State()
+
+
+# Схема ответа Gemini для fallback-расчёта целевых ккал.
+class DailyCaloriesResult(BaseModel):
+    daily_calories: int = Field(description="Целевые ккал в сутки")
 
 
 router = Router(name="initial_survey")
 _on_survey_complete: OnSurveyCompleteCallback | None = None
+_gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+_timezone_finder = TimezoneFinder()
+_geolocator = Nominatim(user_agent="NutriClickBot/1.0")
 #endregion
 
 #region Клавиатуры
@@ -190,6 +260,32 @@ def kb_goal() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
     )
+
+
+# Выбор часового пояса: локация первой, затем популярные регионы и город.
+# Используется шагом SurveyFlow.timezone.
+def kb_timezone() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_TZ_LOCATION, request_location=True)],
+            [KeyboardButton(text=BTN_TZ_MOSCOW), KeyboardButton(text=BTN_TZ_EKAT)],
+            [KeyboardButton(text=BTN_TZ_VLAD), KeyboardButton(text=BTN_TZ_OTHER)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# Inline «Подтвердить / Редактировать» под сообщением с рассчитанными ккал.
+# Используется шагом SurveyFlow.calories_confirm.
+def kb_calories_confirm() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=BTN_KCAL_OK, callback_data=CALLBACK_KCAL_OK),
+                InlineKeyboardButton(text=BTN_KCAL_EDIT, callback_data=CALLBACK_KCAL_EDIT),
+            ]
+        ]
+    )
 #endregion
 
 #region Валидация и хелперы шагов
@@ -219,7 +315,7 @@ def parse_positive_int(text: str) -> int | None:
 
 
 # Собирает dict профиля из FSM-данных для stub_set_profile / on_complete.
-# Используется при завершении опроса (после выбора цели).
+# Используется при завершении опроса (после подтверждения ккал).
 def profile_from_state_data(data: dict[str, Any]) -> dict[str, Any]:
     return {
         "first_name": data["survey_first_name"],
@@ -229,7 +325,181 @@ def profile_from_state_data(data: dict[str, Any]) -> dict[str, Any]:
         "age": data["survey_age"],
         "activity_level": data["survey_activity_level"],
         "goal": data["survey_goal"],
+        "timezone": data["survey_timezone"],
+        "daily_calories": data["survey_daily_calories"],
     }
+
+
+# IANA timezone по координатам (координаты никуда не сохраняются).
+# Используется обработчиком локации и resolve_timezone_from_city.
+def resolve_timezone_from_coords(lat: float, lon: float) -> str | None:
+    try:
+        tz_name = _timezone_finder.timezone_at(lat=lat, lng=lon)
+    except Exception:
+        return None
+    return tz_name or None
+
+
+# IANA timezone по названию города через Nominatim + timezonefinder (sync).
+# Используется resolve_timezone_from_city_async.
+def resolve_timezone_from_city(city_name: str) -> str | None:
+    try:
+        location = _geolocator.geocode(city_name, language="ru", timeout=10)
+    except Exception:
+        return None
+    if location is None:
+        return None
+    return resolve_timezone_from_coords(float(location.latitude), float(location.longitude))
+
+
+# Async-обёртка geocode, чтобы не блокировать event loop.
+# Используется шагом SurveyFlow.timezone_city.
+async def resolve_timezone_from_city_async(city_name: str) -> str | None:
+    return await asyncio.to_thread(resolve_timezone_from_city, city_name)
+
+
+# Mifflin–St Jeor + коэффициент активности + корректировка по цели.
+# Используется перед шагом calories_confirm; при сбое/выходе за диапазон — Gemini.
+def calculate_daily_calories(
+    gender: str,
+    age: int,
+    height_cm: float,
+    weight_kg: float,
+    activity_level: float,
+    goal: str,
+) -> int:
+    if gender == "male":
+        bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age + 5
+    else:
+        bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age - 161
+    tdee = bmr * float(activity_level)
+    factor = GOAL_KCAL_FACTOR.get(goal, 1.0)
+    calories = int(round(tdee * factor / 10.0) * 10)
+    return max(calories, 1)
+
+
+# Fallback через Gemini, если формула дала неразумный результат.
+# В промпте: при явно неверных входах вернуть среднее нормальное (~2000).
+def estimate_daily_calories_gemini(
+    gender: str,
+    age: int,
+    height_cm: float,
+    weight_kg: float,
+    activity_level: float,
+    goal: str,
+) -> int | None:
+    if _gemini_client is None:
+        return None
+    prompt = (
+        "Оцени целевые калории в сутки для пользователя по профилю.\n"
+        f"gender={gender}, age={age}, height_cm={height_cm}, weight_kg={weight_kg}, "
+        f"activity_level={activity_level}, goal={goal}.\n"
+        "Верни JSON строго по схеме с полем daily_calories (целое).\n"
+        "Если входные значения явно неверные или абсурдные — верни среднее "
+        "нормальное значение ккал (около 2000), а не экстремум."
+    )
+    for model_name in MODELS_QUEUE:
+        try:
+            response = _gemini_client.models.generate_content(
+                model=model_name,
+                contents=[prompt],
+                config={
+                    "response_mime_type": "application/json",
+                    "response_schema": DailyCaloriesResult,
+                    "http_options": {
+                        "timeout": REQUEST_TIMEOUT_MS,
+                        "retry_options": {"attempts": 1},
+                    },
+                },
+            )
+            raw = response.text or ""
+            parsed = json.loads(raw)
+            value = int(parsed.get("daily_calories", 0))
+            if value > 0:
+                return value
+        except Exception as e:
+            print(f"survey kcal Gemini fallback ({model_name}): {e}")
+    return None
+
+
+# Считает ккал формулой; вне 1200–5000 или при ошибке — Gemini, иначе ~2000.
+# Используется proceed_to_calories_step.
+def resolve_recommended_calories(data: dict[str, Any]) -> int:
+    gender = str(data["survey_gender"])
+    age = int(data["survey_age"])
+    height_cm = float(data["survey_height"])
+    weight_kg = float(data["survey_weight"])
+    activity_level = float(data["survey_activity_level"])
+    goal = str(data["survey_goal"])
+    try:
+        calories = calculate_daily_calories(
+            gender, age, height_cm, weight_kg, activity_level, goal
+        )
+        if KCAL_FORMULA_MIN <= calories <= KCAL_FORMULA_MAX:
+            return calories
+    except Exception as e:
+        print(f"survey kcal formula failed: {e}")
+        calories = None
+    gemini_value = estimate_daily_calories_gemini(
+        gender, age, height_cm, weight_kg, activity_level, goal
+    )
+    if gemini_value is not None and gemini_value > 0:
+        return gemini_value
+    return KCAL_FALLBACK_DEFAULT
+
+
+# Сохраняет timezone и переходит к шагу подтверждения ккал.
+# Используется хендлерами локации / популярных поясов / города.
+async def proceed_to_calories_step(
+    message: Message,
+    state: FSMContext,
+    timezone_name: str,
+) -> None:
+    await state.update_data(survey_timezone=timezone_name)
+    data = await state.get_data()
+    # Формула быстрая; Gemini-fallback — sync HTTP, не блокируем loop.
+    calories = await asyncio.to_thread(resolve_recommended_calories, data)
+    await state.update_data(survey_daily_calories=calories)
+    await state.set_state(SurveyFlow.calories_confirm)
+    # Снимаем reply-клавиатуру отдельным сообщением (inline нельзя совместить с Remove).
+    stub = await message.answer("\u2060", reply_markup=ReplyKeyboardRemove())
+    try:
+        await stub.delete()
+    except Exception:
+        pass
+    await message.answer(
+        f"Рассчитали, что для вас наиболее подходящим будет значение "
+        f"<b>{calories}</b> ккал в сутки\n"
+        "\n"
+        "Подтверждаете?",
+        parse_mode="HTML",
+        reply_markup=kb_calories_confirm(),
+    )
+
+
+# Завершает опрос через on_complete с собранным профилем.
+# user_id нужен из callback (у callback.message.from_user — бот).
+# Используется после подтверждения или ручного ввода ккал.
+async def finish_survey(
+    message: Message,
+    state: FSMContext,
+    *,
+    user_id: int | None = None,
+) -> None:
+    data = await state.get_data()
+    profile = profile_from_state_data(data)
+    uid = user_id if user_id is not None else (
+        message.from_user.id if message.from_user else 0
+    )
+    profile["user_id"] = uid
+    if _on_survey_complete is None:
+        await state.clear()
+        await message.answer(
+            "Опрос завершён. Главное меню пока не подключено",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+    await _on_survey_complete(message, state, profile)
 #endregion
 
 #region Публичный API
@@ -382,21 +652,123 @@ async def on_activity(message: Message, state: FSMContext) -> None:
     )
 
 
-# Цель → сохранение профиля через on_complete (экран «Распознать», ждём фото/текст).
+# Цель → bridge-текст и шаг часового пояса (on_complete ещё не вызываем).
 @router.message(SurveyFlow.goal, F.text.in_(set(GOAL_BY_BTN)))
 async def on_goal(message: Message, state: FSMContext) -> None:
     goal = GOAL_BY_BTN[message.text or ""]
     await state.update_data(survey_goal=goal)
-    data = await state.get_data()
-    profile = profile_from_state_data(data)
-    if _on_survey_complete is None:
-        await state.clear()
+    await state.set_state(SurveyFlow.timezone)
+    await message.answer("Отлично, ещё пара вопросов:")
+    await message.answer(
+        TIMEZONE_PROMPT_TEXT,
+        reply_markup=kb_timezone(),
+    )
+
+
+# Популярный регион → IANA timezone → шаг ккал.
+@router.message(SurveyFlow.timezone, F.text.in_(set(TIMEZONE_BY_BTN)))
+async def on_timezone_preset(message: Message, state: FSMContext) -> None:
+    tz_name = TIMEZONE_BY_BTN[message.text or ""]
+    await proceed_to_calories_step(message, state, tz_name)
+
+
+# «Другой город...» → ждём название города текстом.
+@router.message(SurveyFlow.timezone, F.text == BTN_TZ_OTHER)
+async def on_timezone_other(message: Message, state: FSMContext) -> None:
+    await state.set_state(SurveyFlow.timezone_city)
+    await message.answer(
+        "Напиши название своего города (например: Самара или Тбилиси)",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+# Локация → timezonefinder (координаты не сохраняем) → шаг ккал.
+@router.message(SurveyFlow.timezone, F.location)
+async def on_timezone_location(message: Message, state: FSMContext) -> None:
+    loc = message.location
+    if loc is None:
         await message.answer(
-            "Опрос завершён. Главное меню пока не подключено",
-            reply_markup=ReplyKeyboardRemove(),
+            "Не удалось прочитать локацию — выберите кнопку или город",
+            reply_markup=kb_timezone(),
         )
         return
-    await _on_survey_complete(message, state, profile)
+    tz_name = resolve_timezone_from_coords(float(loc.latitude), float(loc.longitude))
+    if not tz_name:
+        await message.answer(
+            "Не удалось определить пояс по локации — выберите регион или город",
+            reply_markup=kb_timezone(),
+        )
+        return
+    await proceed_to_calories_step(message, state, tz_name)
+
+
+# Название города → geocode + timezonefinder → шаг ккал.
+@router.message(SurveyFlow.timezone_city, F.text)
+async def on_timezone_city(message: Message, state: FSMContext) -> None:
+    city = (message.text or "").strip()
+    if not city:
+        await message.answer("Напишите название города текстом")
+        return
+    if len(city) > 100:
+        await message.answer("Слишком длинное название — до 100 символов")
+        return
+    await message.answer("Ищем город…")
+    tz_name = await resolve_timezone_from_city_async(city)
+    if not tz_name:
+        await state.set_state(SurveyFlow.timezone)
+        await message.answer(
+            "Не нашли такой город — попробуйте ещё раз или выберите кнопку",
+            reply_markup=kb_timezone(),
+        )
+        return
+    await proceed_to_calories_step(message, state, tz_name)
+
+
+# Inline «Подтвердить» рассчитанные ккал → завершение опроса.
+@router.callback_query(SurveyFlow.calories_confirm, F.data == CALLBACK_KCAL_OK)
+async def on_kcal_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    target = callback.message
+    if target is None:
+        return
+    try:
+        await target.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    uid = callback.from_user.id if callback.from_user else 0
+    await finish_survey(target, state, user_id=uid)
+
+
+# Inline «Редактировать» → ручной ввод целевых ккал.
+@router.callback_query(SurveyFlow.calories_confirm, F.data == CALLBACK_KCAL_EDIT)
+async def on_kcal_edit(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    target = callback.message
+    if target is None:
+        return
+    try:
+        await target.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await state.set_state(SurveyFlow.calories_edit)
+    await target.answer("Введите своё целое число ккал в сутки (например, 2000)")
+
+
+# Ручной ввод ккал → валидация → завершение опроса.
+@router.message(SurveyFlow.calories_edit, F.text)
+async def on_kcal_edit_value(message: Message, state: FSMContext) -> None:
+    raw = (message.text or "").strip()
+    if not raw.isdigit():
+        await message.answer("Введите целое положительное число ккал")
+        return
+    value = int(raw)
+    if value < KCAL_EDIT_MIN or value > KCAL_EDIT_MAX:
+        await message.answer(
+            f"Введите число от {KCAL_EDIT_MIN} до {KCAL_EDIT_MAX}"
+        )
+        return
+    await state.update_data(survey_daily_calories=value)
+    await finish_survey(message, state)
 
 
 # Фото во время любого шага опроса — не запускаем распознавание.
@@ -442,5 +814,20 @@ async def on_goal_other(message: Message, state: FSMContext) -> None:
     await message.answer(
         "Выберите направление кнопкой ниже",
         reply_markup=kb_goal(),
+    )
+
+
+@router.message(SurveyFlow.timezone, F.text)
+async def on_timezone_other_text(message: Message, state: FSMContext) -> None:
+    await message.answer(
+        "Выберите кнопку ниже, поделитесь локацией или укажите другой город",
+        reply_markup=kb_timezone(),
+    )
+
+
+@router.message(SurveyFlow.calories_confirm, F.text)
+async def on_calories_confirm_text(message: Message, state: FSMContext) -> None:
+    await message.answer(
+        "Нажмите кнопку под сообщением: подтвердить или редактировать"
     )
 #endregion

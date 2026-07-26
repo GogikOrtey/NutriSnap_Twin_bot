@@ -388,7 +388,7 @@ def stub_set_daily_calories(user_id: int, calories: int) -> None:
     user["daily_calories"] = calories
 
 
-# 🔰 Запись полей профиля из первичного опроса (без пересчёта daily_calories).
+# 🔰 Запись полей профиля из первичного опроса (включая timezone и daily_calories).
 # Используется on_survey_complete после прохождения initial_survey.
 def stub_set_profile(
     user_id: int,
@@ -400,9 +400,11 @@ def stub_set_profile(
     weight: float,
     activity_level: float,
     goal: str,
+    timezone: str,
+    daily_calories: int,
 ) -> None:
     # 🔰 UPDATE users SET first_name=?, gender=?, age=?, height=?, weight=?,
-    #    activity_level=?, goal=? WHERE id=?
+    #    activity_level=?, goal=?, timezone=?, daily_calories=? WHERE id=?
     user = stub_get_user(user_id)
     user["first_name"] = first_name
     user["gender"] = gender
@@ -411,6 +413,8 @@ def stub_set_profile(
     user["weight"] = weight
     user["activity_level"] = activity_level
     user["goal"] = goal
+    user["timezone"] = timezone
+    user["daily_calories"] = daily_calories
     user["last_active_at"] = int(time.time())
 
 
@@ -1510,7 +1514,11 @@ async def _on_survey_complete(
     state: FSMContext,
     profile: dict[str, Any],
 ) -> None:
-    user_id = message.from_user.id if message.from_user else 0
+    # Из callback.message.from_user — бот; опрос кладёт реальный id в profile["user_id"].
+    user_id = int(
+        profile.get("user_id")
+        or (message.from_user.id if message.from_user else 0)
+    )
     stub_set_profile(
         user_id,
         first_name=str(profile["first_name"]),
@@ -1520,6 +1528,8 @@ async def _on_survey_complete(
         weight=float(profile["weight"]),
         activity_level=float(profile["activity_level"]),
         goal=str(profile["goal"]),
+        timezone=str(profile["timezone"]),
+        daily_calories=int(profile["daily_calories"]),
     )
     await state.clear()
     await show_recognize(message, state)

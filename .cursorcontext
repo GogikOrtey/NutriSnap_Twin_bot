@@ -11,7 +11,7 @@ Telegram-бот для учёта калорий по фото/тексту (Nut
 ```
 NutriSnap_Twin_bot/
 ├── main.py                # Точка входа: /start, главное меню, stub БД (🔰), роутеры
-├── initial_survey.py      # Первичный опрос (онбординг): приветствие → профиль → цель
+├── initial_survey.py      # Первичный опрос: профиль → цель → timezone → ккал
 ├── food_recognition.py    # FSM-флоу распознавания еды (Gemini + confirm UI)
 ├── test_3_local.py        # Локальный прототип анализа фото (без Telegram)
 ├── test_4_tg_bot.py       # Минимальный каркас бота (/start + кнопка)
@@ -31,8 +31,8 @@ main.py
   ├── /start → start_initial_survey (если INITIAL_SURVEY_ENABLED) иначе show_main_menu
   ├── include_router(menu_router)          # Reply-меню, дневник, настройки, выгрузка
   ├── include_router(setup_initial_survey(on_complete=_on_survey_complete))
-  │     └── welcome → category → name/gender/height/weight/age/activity/goal
-  │           → stub_set_profile → show_recognize (клавиатура «Назад», ждём фото/текст)
+  │     └── welcome → … → goal → timezone → calories_confirm[/edit]
+  │           → stub_set_profile(timezone, daily_calories) → show_recognize
   └── include_router(setup_food_recognition(..., on_food_saved=_on_food_saved))
         └── food_recognition.py (Router: фото/текст/callbacks/FSM)
             ├── NotMenuButtonFilter — не слать тексты кнопок меню в Gemini
@@ -65,12 +65,15 @@ main.py
 
 ### `initial_survey.py`
 
-- Router `initial_survey` + FSM `SurveyFlow`: `welcome` → `category` → `name` → `gender` → `height` → `weight` → `age` → `activity` → `goal`.
+- Router `initial_survey` + FSM `SurveyFlow`: `welcome` → `category` → `name` → `gender` → `height` → `weight` → `age` → `activity` → `goal` → `timezone` → `timezone_city` → `calories_confirm` → `calories_edit`.
 - Приветствие (HTML, бренд NutriClick) + inline-кнопка `🚀 Начать короткий опрос` (`survey:start`) под сообщением.
 - Категория: Люди (ккал) → дальше; Роботы/Нейросети → «в разработке», остаёмся на шаге.
 - Выбор — Reply-кнопки; имя/рост/вес/возраст — текст с валидацией. Активность = коэффициенты `1.2…1.9`; цель = `weight_loss` / `muscle_gain` / `maintain`.
-- `setup_initial_survey(on_complete=...)` → router; `on_complete` в main: `stub_set_profile` → `show_recognize` (памятка + reply «⬅️ Назад», без главного экрана).
-- Фото во время опроса: ответ «Сначала закончите короткий опрос». Расчёт `daily_calories` — позже.
+- После цели: «Отлично, ещё пара вопросов:» → timezone.
+- Timezone UX: первой кнопкой `📍 Поделиться локацией` (`request_location`; координаты не храним) + Москва/СПб, Екатеринбург, Владивосток + «Другой город…» (geopy Nominatim → timezonefinder). Зависимости: `geopy`, `timezonefinder`.
+- Ккал: Mifflin–St Jeor × activity × goal (−15% / +15% / 0); вне 1200–5000 или ошибка → Gemini fallback (промпт: при абсурдных входах ~2000); inline `✅ Подтвердить` / `✏️ Редактировать`.
+- `setup_initial_survey(on_complete=...)` → router; `on_complete` в main: `stub_set_profile` (+ timezone, daily_calories; `user_id` из profile при confirm из callback) → `show_recognize`.
+- Фото во время опроса: ответ «Сначала закончите короткий опрос».
 
 ### `food_recognition.py`
 
@@ -103,14 +106,14 @@ main.py
 
 ## Зависимости (по коду)
 
-- `python-dotenv`, `google-genai`, `pydantic`, `aiogram`
+- `python-dotenv`, `google-genai`, `pydantic`, `aiogram`, `timezonefinder`, `geopy`
 
 Отдельного `requirements.txt` в корне пока нет.
 
 ## Планируемое развитие
 
 - Подключить реальную БД вместо `🔰` stub в `main.py` и `save_to_console`.
-- Хранить в БД «прошёл ли опрос»; выключить `INITIAL_SURVEY_ENABLED` и роутить по БД; формула целевых ккал после опроса.
+- Хранить в БД «прошёл ли опрос»; выключить `INITIAL_SURVEY_ENABLED` и роутить по БД.
 - Подключить «Обновить данные пользователя» к `start_initial_survey`.
 - Планировщик «пропущенных» напоминаний по концу окна + сброс `is_triggered_today` по `day_change_hour`.
 - Дневной лимит распознаваний (на ветке «Неверно» → подсказка).
