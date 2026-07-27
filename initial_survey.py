@@ -8,7 +8,8 @@ FSM-флоу стартового опроса: приветствие → ка�
 Подключается из main.py через setup_initial_survey(on_complete=...).
 При активном флаге INITIAL_SURVEY_ENABLED /start ведёт сюда вместо главного меню.
 
-Позже: проверка в БД, прошёл ли пользователь опрос.
+Локация: двухшагово (намерение → request_location) + таймаут 7 с на случай
+выключенного GPS (Telegram тогда не шлёт update боту).
 """
 
 from __future__ import annotations
@@ -73,10 +74,16 @@ BTN_GOAL_GAIN = "📈 Набор веса"
 BTN_GOAL_MAINTAIN = "⚖️ Просто отслеживание"
 
 BTN_TZ_LOCATION = "📍 Поделиться локацией"
+BTN_TZ_SEND_LOCATION = "📍 Отправить геолокацию"
+BTN_TZ_LOCATION_BACK = "⬅️ К выбору пояса"
 BTN_TZ_MOSCOW = "🏙 Москва / СПб (UTC+3)"
 BTN_TZ_EKAT = "🏔 Екатеринбург (UTC+5)"
 BTN_TZ_VLAD = "🌊 Владивосток (UTC+10)"
 BTN_TZ_OTHER = "🌍 Другой город..."
+
+# Если после намерения «поделиться локацией» Telegram ничего не прислал
+# (типично: GPS выключен) — подсказка пользователю. Ошибка клиенту, боту update не уходит.
+LOCATION_WAIT_TIMEOUT_SEC = 7
 
 BTN_KCAL_OK = "✅ Подтвердить"
 BTN_KCAL_EDIT = "✏️ Редактировать"
@@ -163,7 +170,14 @@ TIMEZONE_PROMPT_TEXT = (
     "(в 4:00 утра) и присылал напоминания вовремя.\n"
     "\n"
     "📍 Поделиться локацией — быстро и просто. "
-    "Координаты не храним: они нужны только чтобы определить часовой пояс"
+    "Координаты не храним: они нужны только чтобы определить часовой пояс. "
+    "Если Telegram покажет ошибку — включите GPS на телефоне"
+)
+
+LOCATION_GPS_HINT_TEXT = (
+    "Похоже, локация не пришла. Проверьте, что на телефоне включена "
+    "геолокация (GPS), и нажмите «Поделиться локацией» ещё раз — "
+    "или выберите регион / город"
 )
 
 # Колбэк после успешного опроса: (message, state, profile_dict) → сохранить + «Распознать».
@@ -187,6 +201,7 @@ class SurveyFlow(StatesGroup):
     goal = State()
     timezone = State()
     timezone_city = State()
+    timezone_location_wait = State()
     calories_confirm = State()
     calories_edit = State()
 
@@ -201,6 +216,8 @@ _on_survey_complete: OnSurveyCompleteCallback | None = None
 _gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 _timezone_finder = TimezoneFinder()
 _geolocator = Nominatim(user_agent="NutriClickBot/1.0")
+# user_id → задача таймаута ожидания локации (GPS выкл. → Telegram ничего не шлёт).
+_location_wait_tasks: dict[int, asyncio.Task[None]] = {}
 #endregion
 
 #region Клавиатуры
@@ -263,13 +280,26 @@ def kb_goal() -> ReplyKeyboardMarkup:
 
 
 # Выбор часового пояса: локация первой, затем популярные регионы и город.
+# Кнопка локации без request_location — сначала ловим нажатие, потом просим GPS.
 # Используется шагом SurveyFlow.timezone.
 def kb_timezone() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_TZ_LOCATION, request_location=True)],
+            [KeyboardButton(text=BTN_TZ_LOCATION)],
             [KeyboardButton(text=BTN_TZ_MOSCOW), KeyboardButton(text=BTN_TZ_EKAT)],
             [KeyboardButton(text=BTN_TZ_VLAD), KeyboardButton(text=BTN_TZ_OTHER)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# Клавиатура с request_location после намерения «Поделиться локацией».
+# Используется шагом SurveyFlow.timezone_location_wait.
+def kb_timezone_send_location() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_TZ_SEND_LOCATION, request_location=True)],
+            [KeyboardButton(text=BTN_TZ_LOCATION_BACK)],
         ],
         resize_keyboard=True,
     )
@@ -356,6 +386,62 @@ def resolve_timezone_from_city(city_name: str) -> str | None:
 # Используется шагом SurveyFlow.timezone_city.
 async def resolve_timezone_from_city_async(city_name: str) -> str | None:
     return await asyncio.to_thread(resolve_timezone_from_city, city_name)
+
+
+# Снимает таймер ожидания локации (GPS / отмена / уход с шага).
+# Используется хендлерами timezone и start_location_wait.
+def cancel_location_wait(user_id: int) -> None:
+    task = _location_wait_tasks.pop(user_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+# Если за LOCATION_WAIT_TIMEOUT_SEC локация не пришла — подсказка про GPS.
+# Используется start_location_wait (create_task).
+async def _location_wait_timeout(
+    *,
+    bot: Any,
+    chat_id: int,
+    user_id: int,
+    state: FSMContext,
+) -> None:
+    try:
+        await asyncio.sleep(LOCATION_WAIT_TIMEOUT_SEC)
+    except asyncio.CancelledError:
+        return
+    _location_wait_tasks.pop(user_id, None)
+    current = await state.get_state()
+    if current != SurveyFlow.timezone_location_wait.state:
+        return
+    await state.set_state(SurveyFlow.timezone)
+    await bot.send_message(
+        chat_id,
+        LOCATION_GPS_HINT_TEXT,
+        reply_markup=kb_timezone(),
+    )
+
+
+# Двухшаговая локация: зафиксировали нажатие → request_location + таймер.
+# Иначе при выключенном GPS Telegram ничего боту не шлёт.
+# Используется on_timezone_location_intent.
+async def start_location_wait(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.id if message.from_user else 0
+    cancel_location_wait(user_id)
+    await state.set_state(SurveyFlow.timezone_location_wait)
+    await message.answer(
+        "Нажмите кнопку ниже, чтобы отправить геолокацию. "
+        "Если Telegram покажет ошибку — включите GPS на телефоне",
+        reply_markup=kb_timezone_send_location(),
+    )
+    task = asyncio.create_task(
+        _location_wait_timeout(
+            bot=message.bot,
+            chat_id=message.chat.id,
+            user_id=user_id,
+            state=state,
+        )
+    )
+    _location_wait_tasks[user_id] = task
 
 
 # Mifflin–St Jeor + коэффициент активности + корректировка по цели.
@@ -455,6 +541,8 @@ async def proceed_to_calories_step(
     state: FSMContext,
     timezone_name: str,
 ) -> None:
+    user_id = message.from_user.id if message.from_user else 0
+    cancel_location_wait(user_id)
     await state.update_data(survey_timezone=timezone_name)
     data = await state.get_data()
     # Формула быстрая; Gemini-fallback — sync HTTP, не блокируем loop.
@@ -682,6 +770,8 @@ async def on_goal(message: Message, state: FSMContext) -> None:
 # Популярный регион → IANA timezone → шаг ккал.
 @router.message(SurveyFlow.timezone, F.text.in_(set(TIMEZONE_BY_BTN)))
 async def on_timezone_preset(message: Message, state: FSMContext) -> None:
+    uid = message.from_user.id if message.from_user else 0
+    cancel_location_wait(uid)
     tz_name = TIMEZONE_BY_BTN[message.text or ""]
     await proceed_to_calories_step(message, state, tz_name)
 
@@ -689,6 +779,8 @@ async def on_timezone_preset(message: Message, state: FSMContext) -> None:
 # «Другой город...» → ждём название города текстом.
 @router.message(SurveyFlow.timezone, F.text == BTN_TZ_OTHER)
 async def on_timezone_other(message: Message, state: FSMContext) -> None:
+    uid = message.from_user.id if message.from_user else 0
+    cancel_location_wait(uid)
     await state.set_state(SurveyFlow.timezone_city)
     await message.answer(
         "Напиши название своего города (например: Самара или Тбилиси)",
@@ -696,11 +788,44 @@ async def on_timezone_other(message: Message, state: FSMContext) -> None:
     )
 
 
+# «Поделиться локацией» → шаг request_location + таймаут на случай выкл. GPS.
+@router.message(SurveyFlow.timezone, F.text == BTN_TZ_LOCATION)
+async def on_timezone_location_intent(message: Message, state: FSMContext) -> None:
+    await start_location_wait(message, state)
+
+
+# Назад с шага отправки локации → снова выбор пояса.
+@router.message(SurveyFlow.timezone_location_wait, F.text == BTN_TZ_LOCATION_BACK)
+async def on_timezone_location_back(message: Message, state: FSMContext) -> None:
+    uid = message.from_user.id if message.from_user else 0
+    cancel_location_wait(uid)
+    await state.set_state(SurveyFlow.timezone)
+    await message.answer(
+        "Выберите часовой пояс кнопкой ниже",
+        reply_markup=kb_timezone(),
+    )
+
+
+# Текст кнопки request_location без координат — GPS, скорее всего, выключен.
+@router.message(SurveyFlow.timezone_location_wait, F.text == BTN_TZ_SEND_LOCATION)
+async def on_timezone_send_as_text(message: Message, state: FSMContext) -> None:
+    uid = message.from_user.id if message.from_user else 0
+    cancel_location_wait(uid)
+    await state.set_state(SurveyFlow.timezone)
+    await message.answer(LOCATION_GPS_HINT_TEXT, reply_markup=kb_timezone())
+
+
 # Локация → timezonefinder (координаты не сохраняем) → шаг ккал.
-@router.message(SurveyFlow.timezone, F.location)
+@router.message(
+    StateFilter(SurveyFlow.timezone, SurveyFlow.timezone_location_wait),
+    F.location,
+)
 async def on_timezone_location(message: Message, state: FSMContext) -> None:
+    uid = message.from_user.id if message.from_user else 0
+    cancel_location_wait(uid)
     loc = message.location
     if loc is None:
+        await state.set_state(SurveyFlow.timezone)
         await message.answer(
             "Не удалось прочитать локацию — выберите кнопку или город",
             reply_markup=kb_timezone(),
@@ -708,6 +833,7 @@ async def on_timezone_location(message: Message, state: FSMContext) -> None:
         return
     tz_name = resolve_timezone_from_coords(float(loc.latitude), float(loc.longitude))
     if not tz_name:
+        await state.set_state(SurveyFlow.timezone)
         await message.answer(
             "Не удалось определить пояс по локации — выберите регион или город",
             reply_markup=kb_timezone(),
@@ -845,6 +971,14 @@ async def on_timezone_other_text(message: Message, state: FSMContext) -> None:
     await message.answer(
         "Выберите кнопку ниже, поделитесь локацией или укажите другой город",
         reply_markup=kb_timezone(),
+    )
+
+
+@router.message(SurveyFlow.timezone_location_wait, F.text)
+async def on_timezone_location_wait_other(message: Message, state: FSMContext) -> None:
+    await message.answer(
+        "Нажмите «Отправить геолокацию» или вернитесь к выбору пояса",
+        reply_markup=kb_timezone_send_location(),
     )
 
 

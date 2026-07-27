@@ -47,9 +47,11 @@ main.py
 - Библиотека: `aiogram` 3.x + `MemoryStorage` (FSM), long polling.
 - Проверка `TELEGRAM_BOT_API_KEY` / `GEMINI_API_KEY`, старт polling.
 - `INITIAL_SURVEY_ENABLED = False`: `/start` смотрит NocoDB `users` — нет записи → опрос, есть → главное меню. Флаг `True` принудительно всегда открывает опрос (отладка UI).
+- `/start` и `dispatch_start`: нет профиля → опрос, есть → меню. `get_user` без записи → `UserNotRegisteredError`; `@dp.error` ловит и зовёт `dispatch_start` (как /start).
 - `/start` (есть профиль) → «🏠 Главный экран | Сегодня» из реальных `food_logs`.
 - Дневник / выгрузка / настройки / reminders — через обёртки `get_user`, `get_food_logs_*`, `set_*`, `add_reminder`, … → `db_nocodb`.
 - После ✅ еды: `_on_food_saved` → `insert_food_log_from_result` (emoji в `details_json`) → `trigger_reminders_for_food`.
+- `_on_survey_complete`: «Секунду...» → `asyncio.to_thread(set_profile)` → edit того же сообщения на «Отлично, всё настроено…».
 - Сброс `is_triggered_today` при смене логических суток — process-local `_reminder_day_reset` (до полноценного cron).
 - `🎈` незавершённое: edit dish (`on_edit_dish_pick`), missed reminders (`check_missed_reminders`), перезапуск опроса из профиля, пересчёт ккал после смены goal.
 - ReplyKeyboard / Inline / логическая дата / FAQ / SMTP feedback — без изменений UX.
@@ -71,8 +73,9 @@ main.py
 
 ### `initial_survey.py`
 
-- Router `initial_survey` + FSM `SurveyFlow`: `welcome` → … → `calories_confirm` / `calories_edit`.
-- `on_complete` в main: `set_profile` (upsert NocoDB) → «всё настроено» + `show_recognize`.
+- Router `initial_survey` + FSM `SurveyFlow`: `welcome` → … → `timezone` / `timezone_location_wait` / `timezone_city` → `calories_confirm` / `calories_edit`.
+- Локация двухшагово: «Поделиться локацией» (текст) → `request_location` + таймер 7 с; при тишине (GPS выкл., Telegram не шлёт update) — подсказка включить GPS.
+- `on_complete` в main: «Секунду...» → `set_profile` (upsert NocoDB) → edit «всё настроено» + `show_recognize`.
 
 ### `food_recognition.py`
 

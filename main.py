@@ -17,7 +17,8 @@ FAQ в настройках — обзор возможностей и отве�
 3. SMTP обратной связи (send_feedback_email) + форматтеры / Reply-клавиатуры.
 4. UI-хелперы: Reply → новое сообщение; Inline дневника → edit; чистка «Выберите действие:».
 5. Router меню + хендлеры; /start → опрос или меню по БД; on_food_saved → food_logs + reminders.
-6. main() — старт polling.
+6. UserNotRegisteredError → error-handler → та же ветка, что /start.
+7. main() — старт polling.
 """
 
 from __future__ import annotations
@@ -37,13 +38,14 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, ExceptionTypeFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
+    ErrorEvent,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -408,12 +410,20 @@ class MenuFlow(StatesGroup):
 _reminder_day_reset: dict[int, str] = {}
 
 
+# Профиль отсутствует в NocoDB — пользователь ещё не прошёл опрос / не в БД.
+# Используется get_user; ловится error-handler → ветка как у /start.
+class UserNotRegisteredError(LookupError):
+    def __init__(self, user_id: int) -> None:
+        self.user_id = user_id
+        super().__init__(f"user {user_id} not found in NocoDB")
+
+
 # Профиль пользователя из NocoDB (users). Без автосоздания «тестового» профиля.
 # Используется экранами меню, выгрузкой и расчётом логической даты.
 def get_user(user_id: int) -> dict[str, Any]:
     row = db.get_user(user_id)
     if row is None:
-        raise LookupError(f"user {user_id} not found in NocoDB")
+        raise UserNotRegisteredError(user_id)
     return row
 
 
@@ -1734,6 +1744,7 @@ async def _on_food_saved(
 
 
 # Колбэк после первичного опроса: upsert профиля в NocoDB → «всё настроено».
+# Сначала «Секунду...», затем edit того же сообщения (БД может отвечать 5–10 с).
 # Передаётся в initial_survey.setup_initial_survey(on_complete=...).
 async def _on_survey_complete(
     message: Message,
@@ -1745,25 +1756,43 @@ async def _on_survey_complete(
         profile.get("user_id")
         or (message.from_user.id if message.from_user else 0)
     )
-    set_profile(
-        user_id,
-        first_name=str(profile["first_name"]),
-        gender=str(profile["gender"]),
-        age=int(profile["age"]),
-        height=float(profile["height"]),
-        weight=float(profile["weight"]),
-        activity_level=float(profile["activity_level"]),
-        goal=str(profile["goal"]),
-        timezone=str(profile["timezone"]),
-        daily_calories=int(profile["daily_calories"]),
-    )
+    wait_msg = await message.answer("Секунду...")
+    try:
+        await asyncio.to_thread(
+            set_profile,
+            user_id,
+            first_name=str(profile["first_name"]),
+            gender=str(profile["gender"]),
+            age=int(profile["age"]),
+            height=float(profile["height"]),
+            weight=float(profile["weight"]),
+            activity_level=float(profile["activity_level"]),
+            goal=str(profile["goal"]),
+            timezone=str(profile["timezone"]),
+            daily_calories=int(profile["daily_calories"]),
+        )
+    except Exception as e:
+        print(f"survey set_profile failed user_id={user_id}: {e}", flush=True)
+        try:
+            await wait_msg.edit_text(
+                "Не удалось сохранить профиль. Нажмите /start и попробуйте ещё раз"
+            )
+        except Exception:
+            await message.answer(
+                "Не удалось сохранить профиль. Нажмите /start и попробуйте ещё раз"
+            )
+        return
     await state.clear()
-    await message.answer(
+    done_text = (
         "Отлично, всё настроено! ✅\n"
         "\n"
         "Теперь бот полностью готов к работе. Попробуй отправить фото "
         "или описание еды в чат прямо сейчас"
     )
+    try:
+        await wait_msg.edit_text(done_text)
+    except Exception:
+        await message.answer(done_text)
     await show_recognize(message, state)
 
 
@@ -1780,21 +1809,57 @@ dp.include_router(
 #endregion
 
 #region Хендлеры: корень и навигация
+# Маршрутизация как у /start: нет профиля → опрос, иначе главное меню.
+# user_id нужен из callback (у callback.message.from_user — бот).
+# Используется CommandStart и error-handler UserNotRegisteredError.
+async def dispatch_start(
+    message: Message, state: FSMContext, *, user_id: int | None = None
+) -> None:
+    uid = user_id if user_id is not None else (
+        message.from_user.id if message.from_user else 0
+    )
+    if INITIAL_SURVEY_ENABLED:
+        await start_initial_survey(message, state)
+        return
+    existing = db.get_user(uid)
+    if existing is None:
+        await start_initial_survey(message, state)
+        return
+    await state.clear()
+    await show_main_menu(message, state, user_id=uid)
+
+
 # /start — нет профиля в NocoDB → опрос; иначе главное меню.
 # Регистрируется на dp (не на menu_router), чтобы всегда быть доступным.
 # INITIAL_SURVEY_ENABLED=True принудительно всегда открывает опрос (отладка UI).
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext) -> None:
-    user_id = message.from_user.id if message.from_user else 0
-    if INITIAL_SURVEY_ENABLED:
-        await start_initial_survey(message, state)
-        return
-    existing = db.get_user(user_id)
-    if existing is None:
-        await start_initial_survey(message, state)
-        return
-    await state.clear()
-    await show_main_menu(message, state)
+    await dispatch_start(message, state)
+
+
+# Нет записи в users (кнопка/сообщение до регистрации) → та же ветка, что /start.
+# Используется глобально для menu / food_recognition / любых get_user.
+@dp.error(ExceptionTypeFilter(UserNotRegisteredError))
+async def on_user_not_registered(event: ErrorEvent, state: FSMContext) -> bool:
+    update = event.update
+    exc = event.exception
+    fallback_uid = exc.user_id if isinstance(exc, UserNotRegisteredError) else 0
+    if update.callback_query is not None:
+        cq = update.callback_query
+        try:
+            await cq.answer()
+        except Exception:
+            pass
+        if cq.message is not None:
+            uid = cq.from_user.id if cq.from_user else fallback_uid
+            await dispatch_start(cq.message, state, user_id=uid)
+        return True
+    if update.message is not None:
+        msg = update.message
+        uid = msg.from_user.id if msg.from_user else fallback_uid
+        await dispatch_start(msg, state, user_id=uid)
+        return True
+    return True
 
 
 # Возврат в главное меню из любого раздела по кнопке 🏠.
