@@ -20,7 +20,8 @@ FAQ в настройках — обзор возможностей и отве�
 4. UI-хелперы: Reply → новое сообщение; Inline дневника → edit; чистка «Выберите действие:».
 5. Router меню + хендлеры; /start → опрос или меню по БД; on_food_saved → food_logs + reminders.
 6. UserNotRegisteredError → error-handler → та же ветка, что /start;
-   прочие необработанные update-ошибки → report_console_error (+ почта).
+   сбои БД/Gemini/сети → TECH_ISSUES_USER_TEXT + письмо 🟧🍎;
+   прочие необработанные update-ошибки → report_console_error (🟨⬛🍎).
 7. main() — хуки error_notify + polling; Telegram-сессия через прокси при
    TELEGRAM_PROXY / OUTBOUND_HTTPS_PROXY (VPS mihomo), иначе напрямую.
 """
@@ -63,9 +64,15 @@ from dotenv import load_dotenv
 
 import db_nocodb as db
 from error_notify import (
+    TECH_ISSUES_USER_TEXT,
     attach_asyncio_error_handler,
     install_error_email_hooks,
+    is_external_service_error,
+    notify_user_tech_issues,
+    notify_user_tech_issues_from_event,
     report_console_error,
+    report_error_auto,
+    report_service_problem,
 )
 from food_recognition import setup_food_recognition
 from initial_survey import setup_initial_survey, start_initial_survey
@@ -1912,10 +1919,13 @@ async def _on_food_saved(
         logged_date = logical_today(user)
         insert_food_log_from_result(user_id, result, logged_date)
     except Exception as e:
-        report_console_error(
+        is_ext = report_error_auto(
             f"food_logs insert failed user_id={user_id}: {e}",
             exc=e,
         )
+        if is_ext:
+            await notify_user_tech_issues(bot=bot, chat_id=chat_id)
+        return
     calories = int(getattr(result, "calories", 0) or 0)
     await notify_reminders_after_food(user_id, calories, bot, chat_id)
 
@@ -1949,18 +1959,19 @@ async def _on_survey_complete(
             daily_calories=int(profile["daily_calories"]),
         )
     except Exception as e:
-        report_console_error(
+        is_ext = report_error_auto(
             f"survey set_profile failed user_id={user_id}: {e}",
             exc=e,
         )
+        fail_text = (
+            TECH_ISSUES_USER_TEXT
+            if is_ext
+            else "Не удалось сохранить профиль. Нажмите /start и попробуйте ещё раз"
+        )
         try:
-            await wait_msg.edit_text(
-                "Не удалось сохранить профиль. Нажмите /start и попробуйте ещё раз"
-            )
+            await wait_msg.edit_text(fail_text)
         except Exception:
-            await message.answer(
-                "Не удалось сохранить профиль. Нажмите /start и попробуйте ещё раз"
-            )
+            await message.answer(fail_text)
         return
     await state.clear()
     done_text = (
@@ -2043,17 +2054,20 @@ async def on_user_not_registered(event: ErrorEvent, state: FSMContext) -> bool:
     return True
 
 
-# Прочие необработанные ошибки update → консоль + письмо 🟨⬛🍎 разработчику.
+# Необработанные ошибки update: внешние сервисы → чат + 🟧🍎; иначе 🟨⬛🍎.
 # UserNotRegisteredError обрабатывается отдельным хендлером выше.
 @dp.error()
 async def on_unhandled_update_error(event: ErrorEvent) -> bool:
     exc = event.exception
     if isinstance(exc, UserNotRegisteredError):
         return False
-    report_console_error(
-        f"Unhandled update error: {type(exc).__name__}: {exc}",
-        exc=exc if isinstance(exc, BaseException) else None,
-    )
+    base_exc = exc if isinstance(exc, BaseException) else None
+    ctx = f"Unhandled update error: {type(exc).__name__}: {exc}"
+    if is_external_service_error(base_exc):
+        report_service_problem(ctx, exc=base_exc)
+        await notify_user_tech_issues_from_event(event)
+    else:
+        report_console_error(ctx, exc=base_exc)
     return True
 
 

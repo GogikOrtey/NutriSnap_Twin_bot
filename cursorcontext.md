@@ -55,7 +55,7 @@ main.py
 - VPS: `AiohttpSession(proxy=TELEGRAM_PROXY|OUTBOUND_HTTPS_PROXY)` — polling и скачивание фото через mihomo `127.0.0.1:7890`. Без переменных — напрямую (локалка). Не ставить глобальный `HTTP_PROXY` на процесс.
 - `INITIAL_SURVEY_ENABLED = False`: `/start` смотрит NocoDB `users` — нет записи → опрос, есть → главное меню. Флаг `True` принудительно всегда открывает опрос (отладка UI).
 - `/start` и `dispatch_start`: нет профиля → опрос, есть → меню. `get_user` без записи → `UserNotRegisteredError`; `@dp.error` ловит и зовёт `dispatch_start` (как /start).
-- Прочие необработанные update-ошибки → `@dp.error` + `report_console_error` (консоль + письмо).
+- Прочие необработанные update-ошибки → `@dp.error`: внешние (NocoDB/Gemini/сеть) → `TECH_ISSUES_USER_TEXT` + письмо `🟧🍎`; иначе `report_console_error` (`🟨⬛🍎`).
 - `/start` (есть профиль) → «🏠 Главный экран | Сегодня» из реальных `food_logs`.
 - Дневник / выгрузка / настройки / reminders — через обёртки `get_user` (кэш), `get_food_logs_*`, `set_*` (+ invalidate), `add_reminder`, … → `db_nocodb`.
 - Кэш `users` в `main.py`: `_user_cache` по telegram_id; `set_*` / `set_profile` — optimistic `_patch_user_cache` / `_put_user_cache` (без лишнего GET); `invalidate_user_cache` — fallback если кэша ещё нет. Singleflight + `_user_gen` для гонок.
@@ -69,7 +69,10 @@ main.py
 
 ### `error_notify.py`
 
-- `report_console_error(msg, exc=?)` — print + SMTP на `FEEDBACK_TO_EMAIL`, тема/тело с префиксом `🟨⬛🍎`.
+- `report_console_error(msg, exc=?)` — print + SMTP, тема `🟨⬛🍎 [NutriClick] ошибка в консоли`.
+- `report_service_problem(msg, exc=?)` — print + SMTP, тема `🟧🍎 [NutriClick] проблема с внешним сервисом` (БД / Gemini / сеть).
+- `is_external_service_error` / `report_error_auto` — классификация; при внешнем сбое UX = `TECH_ISSUES_USER_TEXT` в чате.
+- `notify_user_tech_issues` / `notify_user_tech_issues_from_event` — текст пользователю.
 - Антиспам: одинаковый текст не чаще раза в 5 мин; сбой SMTP → только консоль (без рекурсии).
 - Хуки: `sys.excepthook`, `threading.excepthook`, asyncio exception handler.
 - Используется из main / food_recognition / initial_survey.
@@ -121,9 +124,9 @@ main.py
 | `OUTBOUND_HTTPS_PROXY` | Общий локальный прокси для TG+Gemini (VPS: `http://127.0.0.1:7890`) |
 | `TELEGRAM_PROXY` | Опц. алиас прокси только для aiogram |
 | `GEMINI_HTTPS_PROXY` | Опц. алиас прокси только для google-genai |
-| `FEEDBACK_TO_EMAIL` | Куда слать отзывы и письма об ошибках консоли (по умолчанию gog.ortey@yandex.ru) |
+| `FEEDBACK_TO_EMAIL` | Куда слать отзывы и письма об ошибках (по умолчанию gog.ortey@yandex.ru) |
 | `SMTP_HOST` / `SMTP_PORT` | SMTP-сервер (по умолчанию smtp.yandex.ru:465) |
-| `SMTP_USER` / `SMTP_PASSWORD` | Логин и пароль приложения Yandex для отправки (отзывы + ошибки 🟨⬛🍎) |
+| `SMTP_USER` / `SMTP_PASSWORD` | Логин и пароль приложения Yandex (отзывы; ошибки `🟨⬛🍎` / сервисы `🟧🍎`) |
 | `NOCODB_SKYNODE_API_KEY` | API-токен NocoDB (SkyNode VPS); токены: `https://skynode.nocodb.api.gogortey.ru/account/tokens` |
 
 ## База данных (NocoDB / SkyNode)

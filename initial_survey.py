@@ -12,7 +12,8 @@ FSM-флоу стартового опроса: приветствие → ка�
 выключенного GPS (Telegram тогда не шлёт update боту).
 Gemini fallback ккал — через proxy_config.make_gemini_client (прокси на VPS).
 Nominatim / timezonefinder — без прокси.
-Ошибки формулы/Gemini ккал → error_notify.report_console_error (консоль + почта).
+Ошибки формулы/Gemini ккал → error_notify.report_console_error (консоль + 🟨⬛🍎).
+Сбой сохранения профиля обрабатывается в main (_on_survey_complete → 🟧🍎).
 """
 
 from __future__ import annotations

@@ -6,7 +6,8 @@ food_recognition.py — FSM-флоу распознавания еды для Nu
 Вся логика учёта калорий по фото/тексту: промпты и вызовы Gemini, нормализация
 результата, confirm UI (✏️/✅/⚖️ + автоподтверждение), меню правок и связанные
 хендлеры. Подключается из main.py через setup_food_recognition(storage).
-Ошибки Gemini/хендлеров → error_notify.report_console_error (консоль + почта).
+Ошибки Gemini/хендлеров → error_notify (🟧🍎 + TECH_ISSUES_USER_TEXT при
+сбое внешнего сервиса; иначе 🟨⬛🍎).
 
 Как устроен файл (блоки сверху вниз)
 ------------------------------------
@@ -58,7 +59,12 @@ from dotenv import load_dotenv
 from google import genai
 from pydantic import BaseModel, Field
 
-from error_notify import report_console_error
+from error_notify import (
+    TECH_ISSUES_USER_TEXT,
+    report_console_error,
+    report_error_auto,
+    report_service_problem,
+)
 from proxy_config import make_gemini_client
 
 #region Конфиг
@@ -741,10 +747,12 @@ async def on_photo(message: Message, state: FSMContext, bot: Bot) -> None:
         raw = await asyncio.to_thread(analyze_food_photo, str(temp_path), hint)
         result = parse_food_result(raw)
         if result is None:
+            report_service_problem(
+                "Gemini: пустой/неразобранный ответ при анализе фото"
+            )
             await end_with_status_text(
                 message,
-                "Не удалось проанализировать фото: модели сейчас недоступны "
-                "или ответ не разобран. Попробуй ещё раз чуть позже",
+                TECH_ISSUES_USER_TEXT,
                 status_message=status_msg,
             )
             return
@@ -757,10 +765,12 @@ async def on_photo(message: Message, state: FSMContext, bot: Bot) -> None:
             status_message=status_msg,
         )
     except Exception as e:
-        report_console_error(f"Ошибка при обработке фото: {e}", exc=e)
+        is_ext = report_error_auto(f"Ошибка при обработке фото: {e}", exc=e)
         await end_with_status_text(
             message,
-            "Произошла ошибка при обработке фото. Попробуй ещё раз",
+            TECH_ISSUES_USER_TEXT
+            if is_ext
+            else "Произошла ошибка при обработке фото. Попробуй ещё раз",
             status_message=status_msg,
         )
         await state.clear()
@@ -797,10 +807,12 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
             raw = await asyncio.to_thread(analyze_food_text, query)
             result = parse_food_result(raw)
             if result is None:
+                report_service_problem(
+                    "Gemini: пустой/неразобранный ответ при уточнении текста"
+                )
                 await end_with_status_text(
                     message,
-                    "Не удалось уточнить результат. Попробуйте другое описание "
-                    "или пришлите фото",
+                    TECH_ISSUES_USER_TEXT,
                     status_message=status_msg,
                 )
                 return
@@ -817,13 +829,15 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
                 status_message=status_msg,
             )
         except Exception as e:
-            report_console_error(
+            is_ext = report_error_auto(
                 f"Ошибка при уточнении текстового результата: {e}",
                 exc=e,
             )
             await end_with_status_text(
                 message,
-                "Ошибка при уточнении. Попробуйте ещё раз",
+                TECH_ISSUES_USER_TEXT
+                if is_ext
+                else "Ошибка при уточнении. Попробуйте ещё раз",
                 status_message=status_msg,
             )
         return
@@ -836,9 +850,12 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
         raw = await asyncio.to_thread(analyze_food_photo, str(temp_path), hint)
         result = parse_food_result(raw)
         if result is None:
+            report_service_problem(
+                "Gemini: пустой/неразобранный ответ при уточнении по подсказке"
+            )
             await end_with_status_text(
                 message,
-                "Не удалось уточнить результат. Попробуйте другое описание или новое фото",
+                TECH_ISSUES_USER_TEXT,
                 status_message=status_msg,
             )
             return
@@ -851,10 +868,15 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
             status_message=status_msg,
         )
     except Exception as e:
-        report_console_error(f"Ошибка при уточнении по подсказке: {e}", exc=e)
+        is_ext = report_error_auto(
+            f"Ошибка при уточнении по подсказке: {e}",
+            exc=e,
+        )
         await end_with_status_text(
             message,
-            "Ошибка при уточнении. Попробуйте ещё раз",
+            TECH_ISSUES_USER_TEXT
+            if is_ext
+            else "Ошибка при уточнении. Попробуйте ещё раз",
             status_message=status_msg,
         )
     finally:
@@ -921,10 +943,12 @@ async def on_text_food(message: Message, state: FSMContext, bot: Bot) -> None:
         raw = await asyncio.to_thread(analyze_food_text, text)
         result = parse_food_result(raw)
         if result is None:
+            report_service_problem(
+                "Gemini: пустой/неразобранный ответ при анализе текста"
+            )
             await end_with_status_text(
                 message,
-                "Не удалось разобрать описание. Попробуйте сформулировать иначе "
-                "или пришлите фото",
+                TECH_ISSUES_USER_TEXT,
                 status_message=status_msg,
             )
             return
@@ -962,10 +986,12 @@ async def on_text_food(message: Message, state: FSMContext, bot: Bot) -> None:
             status_message=status_msg,
         )
     except Exception as e:
-        report_console_error(f"Ошибка при обработке текста: {e}", exc=e)
+        is_ext = report_error_auto(f"Ошибка при обработке текста: {e}", exc=e)
         await end_with_status_text(
             message,
-            "Произошла ошибка при обработке текста. Попробуй ещё раз",
+            TECH_ISSUES_USER_TEXT
+            if is_ext
+            else "Произошла ошибка при обработке текста. Попробуй ещё раз",
             status_message=status_msg,
         )
         await state.clear()

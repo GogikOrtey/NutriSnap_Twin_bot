@@ -1,13 +1,13 @@
 """
-error_notify.py — письма разработчику о консольных ошибках бота.
+error_notify.py — письма разработчику и UX при сбоях внешних сервисов.
 
 Зачем нужен файл
 ----------------
-Дублирует сообщения об ошибках из консоли на FEEDBACK_TO_EMAIL (SMTP из .env)
-с префиксом 🟨⬛🍎. Используется из main / food_recognition / initial_survey
-и глобальных хуков необработанных исключений (install_error_email_hooks).
-SMTP без прокси (как обратная связь). При сбое отправки письма — только
-консоль, без рекурсии.
+1) Консольные ошибки → SMTP на FEEDBACK_TO_EMAIL с префиксом 🟨⬛🍎
+   (report_console_error + глобальные хуки).
+2) Сбои БД / Gemini / сети → то же + префикс 🟧🍎 и текст пользователю
+   в чате (report_service_problem / TECH_ISSUES_USER_TEXT).
+SMTP без прокси. При сбое отправки письма — только консоль, без рекурсии.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import traceback
+import urllib.error
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from typing import Any
@@ -28,13 +29,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Префиксы темы писем (по ТЗ).
+EMAIL_PREFIX_CONSOLE = "🟨⬛🍎"
+EMAIL_PREFIX_SERVICE = "🟧🍎"
+
+# Текст в чат при сбое NocoDB / Gemini / сети (без точки в конце — стиль бота).
+TECH_ISSUES_USER_TEXT = (
+    "У нас небольшие технические неполадки. "
+    "Попробуйте повторить действие немного позже"
+)
+
 ERROR_TO_EMAIL = os.getenv("FEEDBACK_TO_EMAIL", "gog.ortey@yandex.ru")
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.yandex.ru")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 SMTP_USER = os.getenv("SMTP_USER", "gog.ortey@yandex.ru")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
-# Одинаковый текст ошибки — не чаще раза за TTL (антиспам при ретраях Gemini и т.п.).
+# Одинаковый текст ошибки — не чаще раза за TTL (антиспам при ретраях).
 _DEDUP_TTL_SEC = 300
 _dedup_lock = threading.Lock()
 _dedup_sent: dict[str, float] = {}
@@ -48,7 +59,7 @@ def _fingerprint(text: str) -> str:
 
 
 # True, если это сообщение ещё не слали за последние _DEDUP_TTL_SEC.
-# Используется report_console_error.
+# Используется _emit_error_email.
 def _should_email(text: str) -> bool:
     key = _fingerprint(text)
     now = time.monotonic()
@@ -82,26 +93,28 @@ def _smtp_send_error(subject: str, body: str) -> None:
 
 
 # Ставит отправку письма в daemon-поток (не блокирует хендлеры бота).
-# Используется report_console_error.
+# Используется _emit_error_email.
 def _send_email_async(subject: str, body: str) -> None:
     def _worker() -> None:
         try:
             with _mail_lock:
                 _smtp_send_error(subject, body)
         except Exception as e:
-            # Без report_console_error — иначе цикл при мёртвом SMTP.
+            # Без report_* — иначе цикл при мёртвом SMTP.
             print(f"🟧 error_notify SMTP failed: {e}", flush=True)
 
     threading.Thread(target=_worker, name="error-email", daemon=True).start()
 
 
-# Печатает ошибку в консоль и (с антиспамом) шлёт копию на почту разработчика.
-# Используется except-блоками бота и глобальными хуками исключений.
-def report_console_error(
+# Собирает текст ошибки, печатает в консоль и шлёт письмо с заданным префиксом.
+# Используется report_console_error / report_service_problem.
+def _emit_error_email(
     message: str,
     *,
-    exc: BaseException | None = None,
-) -> None:
+    exc: BaseException | None,
+    subject_prefix: str,
+    subject_label: str,
+) -> str:
     parts: list[str] = []
     if message and message.strip():
         parts.append(message.strip())
@@ -114,13 +127,179 @@ def report_console_error(
     full = "\n\n".join(parts) if parts else "(empty error)"
     print(full, flush=True)
 
-    if not _should_email(full):
-        return
+    if not _should_email(f"{subject_prefix}\n{full}"):
+        return full
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    subject = f"🟨⬛🍎 [NutriClick] ошибка в консоли"
-    body = f"Время: {ts}\n\n{full}\n"
+    subject = f"{subject_prefix} [NutriClick] {subject_label}"
+    body = f"{subject_prefix}\nВремя: {ts}\n\n{full}\n"
     _send_email_async(subject, body)
+    return full
+
+
+# True, если исключение — сбой внешнего сервиса/сети (не логика бота).
+# Используется хендлерами и @dp.error для выбора UX 🟧🍎 vs 🟨⬛🍎.
+def is_external_service_error(exc: BaseException | None) -> bool:
+    if exc is None:
+        return False
+
+    if isinstance(
+        exc,
+        (
+            TimeoutError,
+            ConnectionError,
+            BrokenPipeError,
+            ConnectionResetError,
+            urllib.error.URLError,
+            urllib.error.HTTPError,
+        ),
+    ):
+        return True
+
+    # Сетевые OSError (не FileNotFoundError / PermissionError и т.п.).
+    if isinstance(exc, OSError) and not isinstance(
+        exc,
+        (
+            FileNotFoundError,
+            NotADirectoryError,
+            IsADirectoryError,
+            PermissionError,
+            FileExistsError,
+        ),
+    ):
+        errno = getattr(exc, "errno", None)
+        if errno in {110, 111, 113, 101, 104, 10054, 10060, 10061}:
+            return True
+
+    try:
+        from db_nocodb import NocoDBError
+
+        if isinstance(exc, NocoDBError):
+            return True
+    except ImportError:
+        pass
+
+    try:
+        from google.genai.errors import APIError
+
+        if isinstance(exc, APIError):
+            return True
+    except ImportError:
+        pass
+
+    try:
+        import httpx
+
+        if isinstance(exc, httpx.HTTPError):
+            return True
+    except ImportError:
+        pass
+
+    try:
+        from aiohttp import ClientError
+
+        if isinstance(exc, ClientError):
+            return True
+    except ImportError:
+        pass
+
+    try:
+        from aiogram.exceptions import TelegramNetworkError
+
+        if isinstance(exc, TelegramNetworkError):
+            return True
+    except ImportError:
+        pass
+
+    cause = exc.__cause__ or exc.__context__
+    if isinstance(cause, BaseException) and cause is not exc:
+        return is_external_service_error(cause)
+    return False
+
+
+# Печатает ошибку в консоль и шлёт письмо 🟨⬛🍎 (любая консольная ошибка).
+# Используется except-блоками и глобальными хуками исключений.
+def report_console_error(
+    message: str,
+    *,
+    exc: BaseException | None = None,
+) -> None:
+    _emit_error_email(
+        message,
+        exc=exc,
+        subject_prefix=EMAIL_PREFIX_CONSOLE,
+        subject_label="ошибка в консоли",
+    )
+
+
+# Печатает сбой внешнего сервиса и шлёт письмо 🟧🍎 (БД / Gemini / сеть).
+# Используется вместе с TECH_ISSUES_USER_TEXT в чате пользователя.
+def report_service_problem(
+    message: str,
+    *,
+    exc: BaseException | None = None,
+) -> None:
+    _emit_error_email(
+        message,
+        exc=exc,
+        subject_prefix=EMAIL_PREFIX_SERVICE,
+        subject_label="проблема с внешним сервисом",
+    )
+
+
+# Выбирает 🟧🍎 или 🟨⬛🍎 по типу исключения и шлёт письмо (+ print).
+# Используется единым except в хендлерах, когда нужна авто-классификация.
+def report_error_auto(
+    message: str,
+    *,
+    exc: BaseException | None = None,
+) -> bool:
+    """Возвращает True, если это сбой внешнего сервиса (нужен TECH_ISSUES текст)."""
+    if is_external_service_error(exc):
+        report_service_problem(message, exc=exc)
+        return True
+    report_console_error(message, exc=exc)
+    return False
+
+
+# Пишет TECH_ISSUES_USER_TEXT в чат (message / callback / bot+chat_id).
+# Используется @dp.error и колбэками сохранения профиля/еды.
+async def notify_user_tech_issues(
+    *,
+    message: Any | None = None,
+    bot: Any | None = None,
+    chat_id: int | None = None,
+) -> None:
+    text = TECH_ISSUES_USER_TEXT
+    try:
+        if message is not None and hasattr(message, "answer"):
+            await message.answer(text)
+            return
+        if bot is not None and chat_id is not None:
+            await bot.send_message(chat_id, text)
+    except Exception as e:
+        print(f"🟧 notify_user_tech_issues failed: {e}", flush=True)
+
+
+# Из ErrorEvent aiogram достаёт chat и шлёт TECH_ISSUES_USER_TEXT.
+# Используется on_unhandled_update_error при внешнем сбое.
+async def notify_user_tech_issues_from_event(event: Any) -> None:
+    update = getattr(event, "update", None)
+    if update is None:
+        return
+    try:
+        if getattr(update, "message", None) is not None:
+            await update.message.answer(TECH_ISSUES_USER_TEXT)
+            return
+        cq = getattr(update, "callback_query", None)
+        if cq is not None and cq.message is not None:
+            try:
+                await cq.answer()
+            except Exception:
+                pass
+            await cq.message.answer(TECH_ISSUES_USER_TEXT)
+    except Exception as e:
+        print(f"🟧 notify_user_tech_issues_from_event failed: {e}", flush=True)
 
 
 # sys.excepthook: необработанные исключения главного потока → почта.
@@ -134,7 +313,10 @@ def _excepthook(
         sys.__excepthook__(exc_type, exc, tb)
         return
     text = "".join(traceback.format_exception(exc_type, exc, tb)).rstrip()
-    report_console_error(f"Unhandled exception:\n{text}")
+    if exc is not None and is_external_service_error(exc):
+        report_service_problem(f"Unhandled exception:\n{text}", exc=exc)
+    else:
+        report_console_error(f"Unhandled exception:\n{text}")
 
 
 # threading.excepthook: необработанные исключения в потоках → почта.
@@ -148,7 +330,12 @@ def _threading_excepthook(args: threading.ExceptHookArgs) -> None:
         )
     ).rstrip()
     thread_name = getattr(args.thread, "name", "?")
-    report_console_error(f"Unhandled thread exception ({thread_name}):\n{text}")
+    exc = args.exc_value
+    msg = f"Unhandled thread exception ({thread_name}):\n{text}"
+    if isinstance(exc, BaseException) and is_external_service_error(exc):
+        report_service_problem(msg, exc=exc)
+    else:
+        report_console_error(msg, exc=exc if isinstance(exc, BaseException) else None)
 
 
 # asyncio exception handler: «forgotten» task / callback errors → почта.
@@ -160,7 +347,10 @@ def _asyncio_exception_handler(
     message = str(context.get("message") or "Unhandled asyncio exception")
     exc = context.get("exception")
     if isinstance(exc, BaseException):
-        report_console_error(f"asyncio: {message}", exc=exc)
+        if is_external_service_error(exc):
+            report_service_problem(f"asyncio: {message}", exc=exc)
+        else:
+            report_console_error(f"asyncio: {message}", exc=exc)
     else:
         report_console_error(f"asyncio: {message}\n{context!r}")
 
