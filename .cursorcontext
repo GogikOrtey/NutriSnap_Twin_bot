@@ -13,6 +13,7 @@ NutriSnap_Twin_bot/
 ├── main.py                # Точка входа: /start, главное меню, stub БД (🔰), роутеры
 ├── initial_survey.py      # Первичный опрос: профиль → цель → timezone → ккал
 ├── food_recognition.py    # FSM-флоу распознавания еды (Gemini + confirm UI)
+├── requests_DB_test.py    # Песочница HTTP-запросов к NocoDB API (ручная проверка)
 ├── test_3_local.py        # Локальный прототип анализа фото (без Telegram)
 ├── test_4_tg_bot.py       # Минимальный каркас бота (/start + кнопка)
 ├── img_1.jpg              # Тестовое фото для локального запуска
@@ -114,8 +115,14 @@ main.py
 
 - БД развёрнута на VPS **SkyNode**; доступ из бота — **только через API NocoDB** (не прямой SQL).
 - База API: `https://skynode.nocodb.api.gogortey.ru`
+- Base ID: `p6iywpukq1yiryf`
 - Swagger: `https://skynode.nocodb.api.gogortey.ru/api/v3/meta/bases/p6iywpukq1yiryf/swagger`
-- Ключ: `NOCODB_SKYNODE_API_KEY` в `.env`. Пока stub (`🔰`) в коде; реальные запросы — в процессе подключения.
+- Ключ: `NOCODB_SKYNODE_API_KEY` в `.env` → заголовок `xc-token`.
+- Data API v3: `/api/v3/data/{baseId}/{tableId}/records` (+ `/{recordId}` для одной записи).
+- Table ID `users`: `meooj41uwpyrx9t` (`food_logs` / `reminders` — дописать при появлении ID).
+- Формат ответа list: `{ "records": [ { "id", "id_fields", "fields": {...} } ], "nestedNext" }`.
+- Песочница запросов: `requests_DB_test.py` (`python requests_DB_test.py`) — писать/гонять запросы и смотреть JSON до встраивания в бота.
+- Пока stub (`🔰`) в боте; реальные запросы — в процессе подключения.
 - Полное описание схемы также в `add_info.md` (раздел «Структура БД»).
 
 ### Таблица `users` (профиль)
