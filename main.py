@@ -439,7 +439,7 @@ def stub_set_profile(
 # Подписи типов обратной связи для писем и UI.
 # Используется флоу отзыва / сообщения об ошибке.
 FEEDBACK_KIND_LABELS = {
-    "bug": "Сообщить об ошибке",
+    "bug": "Сообщение об ошибке",
     "idea": "Предложение по улучшению функционала",
 }
 
@@ -491,7 +491,7 @@ async def send_feedback_email(
 
     kind_label = FEEDBACK_KIND_LABELS.get(kind, kind)
     uname = f"@{username}" if username else "—"
-    subject = f"[NutriClick] {kind_label} — user {user_id}"
+    subject = f"🍎 [NutriClick] {kind_label} — user {user_id}"
     body = (
         f"Тип: {kind_label}\n"
         f"user_id: {user_id}\n"
