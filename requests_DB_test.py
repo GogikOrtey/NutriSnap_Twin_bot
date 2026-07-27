@@ -128,23 +128,44 @@ def get_all_users() -> dict[str, Any] | list[Any] | None:
     )
 
 
+def create_user(fields: dict[str, Any]) -> dict[str, Any] | list[Any] | None:
+    """
+    POST новой записи в users.
+    Body по Swagger: {"fields": {...}}; обязателен id (Telegram ID, не autoincrement).
+    Используется в песочнице для проверки создания профиля.
+    """
+    name = fields.get("first_name") or fields.get("id")
+    return call_api(
+        "POST",
+        _records_url(TABLE_USERS),
+        body={"fields": fields},
+        label=f"POST create user ({name})",
+    )
+
+
 # Пример шаблона для следующих запросов (раскомментируй и допиши):
 #
 # def get_user_by_id(user_id: int):
 #     """GET одной записи users по id (Telegram ID)."""
 #     return call_api("GET", _records_url(TABLE_USERS, user_id), label=f"GET user {user_id}")
-#
-# def create_user(fields: dict):
-#     """POST новой записи users. Body обычно: {"fields": {...}} — уточнять по Swagger."""
-#     return call_api(
-#         "POST",
-#         _records_url(TABLE_USERS),
-#         body={"fields": fields},
-#         label="POST create user",
-#     )
 
 
 if __name__ == "__main__":
     # Какие запросы прогнать сейчас — правь этот список:
-    get_all_users()
-    # get_user_by_id(123456789)
+    # get_all_users()
+    create_user(
+        {
+            "id": 123456790,
+            "first_name": "Тестовый-2",
+            "gender": "М",
+            "age": 99,
+            "height": 200,
+            "weight": 100,
+            "activity_level": 2,
+            "goal": "Похудение",
+            "daily_calories": 2000,
+            "timezone": "UTC",
+            "day_change_hour": 4,
+            "created_at": 123456790,
+        }
+    )

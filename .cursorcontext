@@ -126,6 +126,7 @@ main.py
 - Полный OpenAPI 3.1: `nutriclip_DB_swagger_documentation.json` (CRUD + count + links, схемы Request/Response, auth `xc-token`). Использовать как источник правды для запросов.
 - Формат ответа list: `{ "records": [ { "id", "id_fields", "fields": {...} } ], "nestedNext" }`.
 - Песочница запросов: `requests_DB_test.py` (`python requests_DB_test.py`) — писать/гонять запросы и смотреть JSON до встраивания в бота.
+- В текстовых полях БД есть **русские символы** (`first_name`, `goal`, и т.п.). Запросы/ответы — **UTF-8**: body через `json.dumps(..., ensure_ascii=False).encode("utf-8")`, чтение ответа `decode("utf-8")`, печать с `ensure_ascii=False`; на Windows — `sys.stdout.reconfigure(encoding="utf-8")`, иначе кириллица в консоли «ломается».
 - Пока stub (`🔰`) в боте; реальные запросы — в процессе подключения.
 - Поля схемы также в `add_info.md`; нюанс NocoDB: FK через Links (`users`), не колонка `user_id`.
 
