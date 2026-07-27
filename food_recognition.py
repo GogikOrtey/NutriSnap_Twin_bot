@@ -461,15 +461,12 @@ def build_edit_menu_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-# Скрывает Reply-клавиатуру отдельным сообщением и сразу удаляет его.
-# Нельзя вешать ReplyKeyboardRemove на статус «Анализирую…»: Telegram запрещает edit такого сообщения.
-# Используется перед статусом анализа (фото/текст/уточнение).
-async def hide_reply_keyboard(message: Message) -> None:
-    try:
-        stub = await message.answer("\u2060", reply_markup=ReplyKeyboardRemove())
-        await stub.delete()
-    except Exception:
-        pass
+# Шлёт статус анализа и сразу снимает Reply-клавиатуру («🏠 Главное меню»).
+# Один пузырь вместо пустого stub+delete: текст виден, клавиатура пропадает.
+# Edit в превью обычно проходит; если нет — show_confirm_preview шлёт новое сообщение.
+# Используется в on_photo / on_text_food / on_hint_text.
+async def send_analysis_status(message: Message, text: str) -> Message:
+    return await message.answer(text, reply_markup=ReplyKeyboardRemove())
 
 
 # Завершает статус-сообщение текстом и при необходимости возвращает «🏠 Главное меню».
@@ -734,9 +731,7 @@ async def handle_ai_result(
 @router.message(StateFilter(None, FoodFlow.confirming), F.photo)
 async def on_photo(message: Message, state: FSMContext, bot: Bot) -> None:
     await state.clear()
-    # Скрываем «🏠» отдельно: статус должен оставаться editable для превью.
-    await hide_reply_keyboard(message)
-    status_msg = await message.answer("✨ Анализирую фото…")
+    status_msg = await send_analysis_status(message, "✨ Анализирую фото…")
     photo = message.photo[-1]
     file_id = photo.file_id
     hint = (message.caption or "").strip() or None
@@ -801,8 +796,7 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
             if prev_dish
             else hint
         )
-        await hide_reply_keyboard(message)
-        status_msg = await message.answer("Уточняю по вашей подсказке…")
+        status_msg = await send_analysis_status(message, "Уточняю по вашей подсказке…")
         try:
             raw = await asyncio.to_thread(analyze_food_text, query)
             result = parse_food_result(raw)
@@ -842,8 +836,7 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
             )
         return
 
-    await hide_reply_keyboard(message)
-    status_msg = await message.answer("Уточняю по вашей подсказке…")
+    status_msg = await send_analysis_status(message, "Уточняю по вашей подсказке…")
     temp_path: Path | None = None
     try:
         temp_path = await download_photo_temp(bot, file_id)
@@ -936,9 +929,7 @@ async def on_text_food(message: Message, state: FSMContext, bot: Bot) -> None:
         await message.answer("Напишите, что съели, или сколько ккал — либо пришлите фото")
         return
 
-    # Скрываем «🏠» отдельно: статус должен оставаться editable для превью.
-    await hide_reply_keyboard(message)
-    status_msg = await message.answer("✨ Анализирую описание…")
+    status_msg = await send_analysis_status(message, "✨ Анализирую описание…")
     try:
         raw = await asyncio.to_thread(analyze_food_text, text)
         result = parse_food_result(raw)

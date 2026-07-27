@@ -117,6 +117,7 @@ main.py
 
 - Клиент Gemini через `make_gemini_client` (прокси на VPS).
 - Без изменений флоу Gemini/FSM; `persist_confirmed_food` → консоль + `on_food_saved` (запись в БД в main).
+- Статус анализа (`send_analysis_status`): «✨ Анализирую…» сразу с `ReplyKeyboardRemove` (без пустого stub+delete). Edit в превью обычно ок; fallback — новое сообщение.
 
 ## Переменные окружения
 
