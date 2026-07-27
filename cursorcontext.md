@@ -53,6 +53,7 @@ main.py
 - Библиотека: `aiogram` 3.x + `MemoryStorage` (FSM), long polling.
 - Проверка `TELEGRAM_BOT_API_KEY` / `GEMINI_API_KEY`, старт polling.
 - VPS: `AiohttpSession(proxy=TELEGRAM_PROXY|OUTBOUND_HTTPS_PROXY)` — polling и скачивание фото через mihomo `127.0.0.1:7890`. Без переменных — напрямую (локалка). Не ставить глобальный `HTTP_PROXY` на процесс.
+- `DropStaleMessagesMiddleware` (`dp.message.outer_middleware`): сообщения старше 10 мин (`STALE_MESSAGE_MAX_AGE_SEC`) не обрабатываются (очередь после даунтайма); чату один раз за 60 с пишется `STALE_RECOVERY_TEXT` («был офлайн — пришлите ещё раз»).
 - `INITIAL_SURVEY_ENABLED = False`: `/start` смотрит NocoDB `users` — нет записи → опрос, есть → главное меню. Флаг `True` принудительно всегда открывает опрос (отладка UI).
 - `/start` и `dispatch_start`: нет профиля → опрос, есть → меню. `get_user` без записи → `UserNotRegisteredError`; `@dp.error` ловит и зовёт `dispatch_start` (как /start).
 - Прочие необработанные update-ошибки → `@dp.error`: внешние (NocoDB/Gemini/сеть) → `TECH_ISSUES_USER_TEXT` + письмо `🟧🍎`; иначе `report_console_error` (`🟨⬛🍎`).

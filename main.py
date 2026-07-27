@@ -24,6 +24,8 @@ FAQ в настройках — обзор возможностей и отве�
    прочие необработанные update-ошибки → report_console_error (🟨⬛🍎).
 7. main() — хуки error_notify + polling; Telegram-сессия через прокси при
    TELEGRAM_PROXY / OUTBOUND_HTTPS_PROXY (VPS mihomo), иначе напрямую.
+8. DropStaleMessagesMiddleware — сообщения старше 10 мин (очередь после
+   даунтайма) не обрабатываются; чату один раз пишется, что бот снова онлайн.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ import os
 import smtplib
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta
 from email import encoders
@@ -44,7 +47,7 @@ from email.mime.text import MIMEText
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import CommandStart, ExceptionTypeFilter
 from aiogram.fsm.context import FSMContext
@@ -59,6 +62,7 @@ from aiogram.types import (
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
+    TelegramObject,
 )
 from dotenv import load_dotenv
 
@@ -94,6 +98,16 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 # Если True — /start всегда кидает на первичный опрос (для отладки UI).
 # Если False — маршрутизация по наличию записи в users (NocoDB).
 INITIAL_SURVEY_ENABLED = False
+
+# Сообщения старше этого возраста (после даунтайма бота) не обрабатываем.
+STALE_MESSAGE_MAX_AGE_SEC = 10 * 60
+# Антиспам: при пачке старых апдейтов из одного чата — одно уведомление.
+STALE_RECOVERY_NOTIFY_COOLDOWN_SEC = 60
+# Текст «снова онлайн» (без точки в конце — стиль бота).
+STALE_RECOVERY_TEXT = (
+    "Я был ненадолго офлайн, но уже снова на связи 🙂\n"
+    "Если отправляли что-то, пока меня не было — пришлите ещё раз"
+)
 
 # Кнопка возврата в корень — есть в основных разделах.
 BTN_MAIN_MENU = "🏠 Главное меню"
@@ -1906,6 +1920,63 @@ menu_router = Router(name="main_menu")
 
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
+
+# chat_id → monotonic time последнего STALE_RECOVERY_TEXT (антиспам при catch-up).
+_stale_recovery_notified_at: dict[int, float] = {}
+
+
+# True, если message.date старше STALE_MESSAGE_MAX_AGE_SEC (очередь после даунтайма).
+# Используется DropStaleMessagesMiddleware.
+def _is_stale_message(message: Message) -> bool:
+    if message.date is None:
+        return False
+    age_sec = time.time() - message.date.timestamp()
+    return age_sec > STALE_MESSAGE_MAX_AGE_SEC
+
+
+# Один раз за cooldown пишет STALE_RECOVERY_TEXT в чат (пачка старых апдейтов).
+# Используется DropStaleMessagesMiddleware при отбрасывании устаревшего сообщения.
+async def _maybe_notify_stale_recovery(message: Message) -> None:
+    chat = message.chat
+    if chat is None:
+        return
+    chat_id = chat.id
+    now = time.monotonic()
+    last = _stale_recovery_notified_at.get(chat_id, 0.0)
+    if now - last < STALE_RECOVERY_NOTIFY_COOLDOWN_SEC:
+        return
+    _stale_recovery_notified_at[chat_id] = now
+    # Подчистка устаревших ключей, чтобы dict не рос бесконечно.
+    cutoff = now - STALE_RECOVERY_NOTIFY_COOLDOWN_SEC
+    stale_keys = [cid for cid, ts in _stale_recovery_notified_at.items() if ts < cutoff]
+    for cid in stale_keys:
+        if cid != chat_id:
+            _stale_recovery_notified_at.pop(cid, None)
+    try:
+        await message.answer(STALE_RECOVERY_TEXT)
+    except Exception as e:
+        report_console_error(
+            f"stale recovery notify failed chat_id={chat_id}: {e}",
+            exc=e,
+        )
+
+
+# Outer middleware: не обрабатывает сообщения старше 10 мин; пишет «снова онлайн».
+# Регистрируется на dp.message; ловит очередь Telegram после падения/рестарта бота.
+class DropStaleMessagesMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        if isinstance(event, Message) and _is_stale_message(event):
+            await _maybe_notify_stale_recovery(event)
+            return None
+        return await handler(event, data)
+
+
+dp.message.outer_middleware(DropStaleMessagesMiddleware())
 # Колбэк после подтверждения еды: INSERT food_logs → reminders.
 # Передаётся в food_recognition.setup_food_recognition(on_food_saved=...).
 async def _on_food_saved(
