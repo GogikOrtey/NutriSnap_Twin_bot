@@ -132,7 +132,7 @@ def _emit_error_email(
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     subject = f"{subject_prefix} [NutriClick] {subject_label}"
-    body = f"{subject_prefix}\nВремя: {ts}\n\n{full}\n"
+    body = f"Время: {ts}\n\n{full}\n"
     _send_email_async(subject, body)
     return full
 
