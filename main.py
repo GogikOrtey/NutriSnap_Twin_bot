@@ -8,6 +8,7 @@ main.py — точка входа Telegram-бота NutriSnap (@nutrisnap_ultra_
 Распознавание еды — в food_recognition.py (отдельный Router).
 Первичный опрос — в initial_survey.py; /start смотрит NocoDB users.
 Обратная связь (баг / идея) — SMTP-письмо на FEEDBACK_TO_EMAIL.
+Консольные ошибки → error_notify (письмо с префиксом 🟨⬛🍎).
 FAQ в настройках — обзор возможностей и ответы по темам (распознавание, дневник, …).
 
 Как устроен файл
@@ -18,9 +19,10 @@ FAQ в настройках — обзор возможностей и отве�
 3. SMTP обратной связи (send_feedback_email) + форматтеры / Reply-клавиатуры.
 4. UI-хелперы: Reply → новое сообщение; Inline дневника → edit; чистка «Выберите действие:».
 5. Router меню + хендлеры; /start → опрос или меню по БД; on_food_saved → food_logs + reminders.
-6. UserNotRegisteredError → error-handler → та же ветка, что /start.
-7. main() — старт polling; Telegram-сессия через прокси при TELEGRAM_PROXY /
-   OUTBOUND_HTTPS_PROXY (VPS mihomo), иначе напрямую.
+6. UserNotRegisteredError → error-handler → та же ветка, что /start;
+   прочие необработанные update-ошибки → report_console_error (+ почта).
+7. main() — хуки error_notify + polling; Telegram-сессия через прокси при
+   TELEGRAM_PROXY / OUTBOUND_HTTPS_PROXY (VPS mihomo), иначе напрямую.
 """
 
 from __future__ import annotations
@@ -60,6 +62,11 @@ from aiogram.types import (
 from dotenv import load_dotenv
 
 import db_nocodb as db
+from error_notify import (
+    attach_asyncio_error_handler,
+    install_error_email_hooks,
+    report_console_error,
+)
 from food_recognition import setup_food_recognition
 from initial_survey import setup_initial_survey, start_initial_survey
 from proxy_config import get_telegram_proxy
@@ -1905,7 +1912,10 @@ async def _on_food_saved(
         logged_date = logical_today(user)
         insert_food_log_from_result(user_id, result, logged_date)
     except Exception as e:
-        print(f"food_logs insert failed user_id={user_id}: {e}", flush=True)
+        report_console_error(
+            f"food_logs insert failed user_id={user_id}: {e}",
+            exc=e,
+        )
     calories = int(getattr(result, "calories", 0) or 0)
     await notify_reminders_after_food(user_id, calories, bot, chat_id)
 
@@ -1939,7 +1949,10 @@ async def _on_survey_complete(
             daily_calories=int(profile["daily_calories"]),
         )
     except Exception as e:
-        print(f"survey set_profile failed user_id={user_id}: {e}", flush=True)
+        report_console_error(
+            f"survey set_profile failed user_id={user_id}: {e}",
+            exc=e,
+        )
         try:
             await wait_msg.edit_text(
                 "Не удалось сохранить профиль. Нажмите /start и попробуйте ещё раз"
@@ -2027,6 +2040,20 @@ async def on_user_not_registered(event: ErrorEvent, state: FSMContext) -> bool:
         uid = msg.from_user.id if msg.from_user else fallback_uid
         await dispatch_start(msg, state, user_id=uid)
         return True
+    return True
+
+
+# Прочие необработанные ошибки update → консоль + письмо 🟨⬛🍎 разработчику.
+# UserNotRegisteredError обрабатывается отдельным хендлером выше.
+@dp.error()
+async def on_unhandled_update_error(event: ErrorEvent) -> bool:
+    exc = event.exception
+    if isinstance(exc, UserNotRegisteredError):
+        return False
+    report_console_error(
+        f"Unhandled update error: {type(exc).__name__}: {exc}",
+        exc=exc if isinstance(exc, BaseException) else None,
+    )
     return True
 
 
@@ -2670,7 +2697,7 @@ async def on_feedback_text(message: Message, state: FSMContext) -> None:
             text=text,
         )
     except Exception as exc:
-        print(f"feedback email error: {exc}", flush=True)
+        report_console_error(f"feedback email error: {exc}", exc=exc)
         await message.answer(
             "Не удалось отправить сообщение. Попробуйте позже "
             "или напишите разработчику напрямую"
@@ -2705,7 +2732,7 @@ async def on_feedback_photo(message: Message, state: FSMContext) -> None:
             photo_bytes=photo_bytes,
         )
     except Exception as exc:
-        print(f"feedback email error: {exc}", flush=True)
+        report_console_error(f"feedback email error: {exc}", exc=exc)
         await message.answer(
             "Не удалось отправить сообщение. Попробуйте позже "
             "или напишите разработчику напрямую"
@@ -3180,6 +3207,9 @@ async def on_rem_ok(callback: CallbackQuery, state: FSMContext) -> None:
 # Telegram-сессия: при TELEGRAM_PROXY/OUTBOUND_HTTPS_PROXY — через локальный
 # mihomo (VPS); иначе напрямую (локальная разработка). Фото/getFile — та же сессия.
 async def main() -> None:
+    install_error_email_hooks()
+    attach_asyncio_error_handler(asyncio.get_running_loop())
+
     if not BOT_TOKEN:
         raise SystemExit(
             "TELEGRAM_BOT_API_KEY не найден. Добавь его в .env и перезапусти скрипт."
@@ -3191,8 +3221,8 @@ async def main() -> None:
 
     if not SMTP_PASSWORD:
         print(
-            "🟧 SMTP_PASSWORD не задан в .env — отправка отзывов на почту "
-            "не будет работать, пока не добавите пароль приложения Yandex",
+            "🟧 SMTP_PASSWORD не задан в .env — отзывы и письма об ошибках "
+            "на почту не будут работать, пока не добавите пароль приложения Yandex",
             flush=True,
         )
 

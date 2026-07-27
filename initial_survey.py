@@ -12,6 +12,7 @@ FSM-флоу стартового опроса: приветствие → ка�
 выключенного GPS (Telegram тогда не шлёт update боту).
 Gemini fallback ккал — через proxy_config.make_gemini_client (прокси на VPS).
 Nominatim / timezonefinder — без прокси.
+Ошибки формулы/Gemini ккал → error_notify.report_console_error (консоль + почта).
 """
 
 from __future__ import annotations
@@ -38,10 +39,11 @@ from aiogram.types import (
 from dotenv import load_dotenv
 from geopy.geocoders import Nominatim
 from google import genai
+
+from error_notify import report_console_error
+from proxy_config import make_gemini_client
 from pydantic import BaseModel, Field
 from timezonefinder import TimezoneFinder
-
-from proxy_config import make_gemini_client
 
 #region Константы кнопок и тексты
 load_dotenv()
@@ -509,7 +511,10 @@ def estimate_daily_calories_gemini(
             if value > 0:
                 return value
         except Exception as e:
-            print(f"survey kcal Gemini fallback ({model_name}): {e}")
+            report_console_error(
+                f"survey kcal Gemini fallback ({model_name}): {e}",
+                exc=e,
+            )
     return None
 
 
@@ -529,7 +534,7 @@ def resolve_recommended_calories(data: dict[str, Any]) -> int:
         if KCAL_FORMULA_MIN <= calories <= KCAL_FORMULA_MAX:
             return calories
     except Exception as e:
-        print(f"survey kcal formula failed: {e}")
+        report_console_error(f"survey kcal formula failed: {e}", exc=e)
         calories = None
     gemini_value = estimate_daily_calories_gemini(
         gender, age, height_cm, weight_kg, activity_level, goal

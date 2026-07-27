@@ -6,6 +6,7 @@ food_recognition.py — FSM-флоу распознавания еды для Nu
 Вся логика учёта калорий по фото/тексту: промпты и вызовы Gemini, нормализация
 результата, confirm UI (✏️/✅/⚖️ + автоподтверждение), меню правок и связанные
 хендлеры. Подключается из main.py через setup_food_recognition(storage).
+Ошибки Gemini/хендлеров → error_notify.report_console_error (консоль + почта).
 
 Как устроен файл (блоки сверху вниз)
 ------------------------------------
@@ -57,6 +58,7 @@ from dotenv import load_dotenv
 from google import genai
 from pydantic import BaseModel, Field
 
+from error_notify import report_console_error
 from proxy_config import make_gemini_client
 
 #region Конфиг
@@ -240,7 +242,10 @@ def _generate_with_fallback(contents: list[Any]) -> str | None:
             print(f"Успешно получено на модели {model_name}!")
             break
         except Exception as e:
-            print(f"Попытка {index} не удалась. Ошибка: {e}")
+            report_console_error(
+                f"Попытка {index} не удалась. Ошибка: {e}",
+                exc=e,
+            )
             skipped_models.add(model_name)
 
     return response_text
@@ -265,7 +270,10 @@ def analyze_food_photo(image_path: str, hint: str | None = None) -> str | None:
         try:
             client.files.delete(name=uploaded_file.name)
         except Exception as e:
-            print(f"Не удалось удалить файл из Google Cloud: {e}")
+            report_console_error(
+                f"Не удалось удалить файл из Google Cloud: {e}",
+                exc=e,
+            )
 
 
 # Анализ текстового описания еды / числа ккал через Gemini (без фото).
@@ -523,7 +531,7 @@ def parse_food_result(raw: str | None) -> FoodResult | None:
     try:
         return FoodResult.model_validate(json.loads(raw))
     except Exception as e:
-        print(f"Не удалось разобрать ответ модели: {e}")
+        report_console_error(f"Не удалось разобрать ответ модели: {e}", exc=e)
         return None
 #endregion
 
@@ -749,7 +757,7 @@ async def on_photo(message: Message, state: FSMContext, bot: Bot) -> None:
             status_message=status_msg,
         )
     except Exception as e:
-        print(f"Ошибка при обработке фото: {e}")
+        report_console_error(f"Ошибка при обработке фото: {e}", exc=e)
         await end_with_status_text(
             message,
             "Произошла ошибка при обработке фото. Попробуй ещё раз",
@@ -809,7 +817,10 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
                 status_message=status_msg,
             )
         except Exception as e:
-            print(f"Ошибка при уточнении текстового результата: {e}")
+            report_console_error(
+                f"Ошибка при уточнении текстового результата: {e}",
+                exc=e,
+            )
             await end_with_status_text(
                 message,
                 "Ошибка при уточнении. Попробуйте ещё раз",
@@ -840,7 +851,7 @@ async def on_hint_text(message: Message, state: FSMContext, bot: Bot) -> None:
             status_message=status_msg,
         )
     except Exception as e:
-        print(f"Ошибка при уточнении по подсказке: {e}")
+        report_console_error(f"Ошибка при уточнении по подсказке: {e}", exc=e)
         await end_with_status_text(
             message,
             "Ошибка при уточнении. Попробуйте ещё раз",
@@ -951,7 +962,7 @@ async def on_text_food(message: Message, state: FSMContext, bot: Bot) -> None:
             status_message=status_msg,
         )
     except Exception as e:
-        print(f"Ошибка при обработке текста: {e}")
+        report_console_error(f"Ошибка при обработке текста: {e}", exc=e)
         await end_with_status_text(
             message,
             "Произошла ошибка при обработке текста. Попробуй ещё раз",
