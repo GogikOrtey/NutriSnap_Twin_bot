@@ -19,7 +19,8 @@ FAQ в настройках — обзор возможностей и отве�
 4. UI-хелперы: Reply → новое сообщение; Inline дневника → edit; чистка «Выберите действие:».
 5. Router меню + хендлеры; /start → опрос или меню по БД; on_food_saved → food_logs + reminders.
 6. UserNotRegisteredError → error-handler → та же ветка, что /start.
-7. main() — старт polling.
+7. main() — старт polling; Telegram-сессия через прокси при TELEGRAM_PROXY /
+   OUTBOUND_HTTPS_PROXY (VPS mihomo), иначе напрямую.
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import CommandStart, ExceptionTypeFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -60,6 +62,7 @@ from dotenv import load_dotenv
 import db_nocodb as db
 from food_recognition import setup_food_recognition
 from initial_survey import setup_initial_survey, start_initial_survey
+from proxy_config import get_telegram_proxy
 
 #region Конфиг и тексты кнопок
 load_dotenv()
@@ -3174,6 +3177,8 @@ async def on_rem_ok(callback: CallbackQuery, state: FSMContext) -> None:
 
 #region Запуск
 # Точка входа: проверка ключей и long-polling.
+# Telegram-сессия: при TELEGRAM_PROXY/OUTBOUND_HTTPS_PROXY — через локальный
+# mihomo (VPS); иначе напрямую (локальная разработка). Фото/getFile — та же сессия.
 async def main() -> None:
     if not BOT_TOKEN:
         raise SystemExit(
@@ -3191,7 +3196,16 @@ async def main() -> None:
             flush=True,
         )
 
-    bot = Bot(token=BOT_TOKEN)
+    telegram_proxy = get_telegram_proxy()
+    session: AiohttpSession | None = None
+    if telegram_proxy:
+        # Нужен пакет aiohttp-socks (см. requirements.txt).
+        session = AiohttpSession(proxy=telegram_proxy)
+        print(f"🟦 Telegram через прокси: {telegram_proxy}", flush=True)
+    else:
+        print("🟦 Telegram напрямую (прокси не задан)", flush=True)
+
+    bot = Bot(token=BOT_TOKEN, session=session) if session else Bot(token=BOT_TOKEN)
     print("🟩 Бот @nutrisnap_ultra_bot запущен. Нажми Ctrl+C для остановки", flush=True)
     await dp.start_polling(bot)
 

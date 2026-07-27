@@ -12,7 +12,8 @@ food_recognition.py — FSM-флоу распознавания еды для Nu
 
 1. Импорты и конфиг (таймауты, очередь моделей, callback_data, тексты кнопок).
 2. Промпты PHOTO_PROMPT / TEXT_PROMPT.
-3. FoodFlow (FSM), FoodResult (Pydantic-схема), клиент Gemini, Router.
+3. FoodFlow (FSM), FoodResult (Pydantic-схема), клиент Gemini
+   (через proxy_config.make_gemini_client — точечный прокси на VPS), Router.
 4. Анализ через Gemini (_generate_with_fallback, analyze_food_photo/text).
 5. Нормализация и форматирование результата.
 6. Клавиатуры confirm / label / cancel / edit-menu (+ «🏠 Главное меню»).
@@ -55,6 +56,8 @@ from aiogram.types import (
 from dotenv import load_dotenv
 from google import genai
 from pydantic import BaseModel, Field
+
+from proxy_config import make_gemini_client
 
 #region Конфиг
 load_dotenv()
@@ -134,7 +137,13 @@ is_label=false, portion_known=false."""
 #endregion
 
 #region Схема ответа и роутер
-client = genai.Client(api_key=GEMINI_API_KEY)
+# Клиент с точечным прокси (GEMINI_HTTPS_PROXY / OUTBOUND_HTTPS_PROXY) на VPS.
+_gemini = make_gemini_client(GEMINI_API_KEY)
+if _gemini is None:
+    raise SystemExit(
+        "GEMINI_API_KEY не найден. Добавь его в .env и перезапусти скрипт."
+    )
+client: genai.Client = _gemini
 router = Router(name="food_recognition")
 
 # MemoryStorage из main.py — нужен таймеру автоподтверждения (schedule_auto_confirm).

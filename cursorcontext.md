@@ -11,6 +11,7 @@ Telegram-бот для учёта калорий по фото/тексту (Nut
 ```
 NutriSnap_Twin_bot/
 ├── main.py                # Точка входа: /start, меню, обёртки БД, роутеры
+├── proxy_config.py        # Точечный HTTPS-прокси для Telegram + Gemini (VPS)
 ├── db_nocodb.py           # Клиент NocoDB Data API v3 (users / food_logs / reminders)
 ├── initial_survey.py      # Первичный опрос: профиль → цель → timezone → ккал
 ├── food_recognition.py    # FSM-флоу распознавания еды (Gemini + confirm UI)
@@ -20,6 +21,7 @@ NutriSnap_Twin_bot/
 ├── test_3_local.py        # Локальный прототип анализа фото (без Telegram)
 ├── test_4_tg_bot.py       # Минимальный каркас бота (/start + кнопка)
 ├── img_1.jpg              # Тестовое фото для локального запуска
+├── requirements.txt       # pip-зависимости (в т.ч. aiohttp-socks)
 ├── .env                   # Секреты (не в git)
 ├── .env.example           # Шаблон переменных окружения
 ├── .gitignore
@@ -31,9 +33,10 @@ NutriSnap_Twin_bot/
 
 ```
 main.py
-  ├── Bot + Dispatcher + MemoryStorage
+  ├── Bot + AiohttpSession(proxy?) + Dispatcher + MemoryStorage
+  ├── proxy_config.py                   # TELEGRAM_/GEMINI_/OUTBOUND_HTTPS_PROXY
   ├── /start → db.get_user? опрос : меню  (INITIAL_SURVEY_ENABLED=False)
-  ├── db_nocodb.py                      # HTTP xc-token → NocoDB
+  ├── db_nocodb.py                      # HTTP xc-token → NocoDB (без прокси)
   ├── include_router(menu_router)
   ├── include_router(setup_initial_survey(on_complete=_on_survey_complete))
   │     └── … → set_profile (upsert users) → show_recognize
@@ -47,6 +50,7 @@ main.py
 
 - Библиотека: `aiogram` 3.x + `MemoryStorage` (FSM), long polling.
 - Проверка `TELEGRAM_BOT_API_KEY` / `GEMINI_API_KEY`, старт polling.
+- VPS: `AiohttpSession(proxy=TELEGRAM_PROXY|OUTBOUND_HTTPS_PROXY)` — polling и скачивание фото через mihomo `127.0.0.1:7890`. Без переменных — напрямую (локалка). Не ставить глобальный `HTTP_PROXY` на процесс.
 - `INITIAL_SURVEY_ENABLED = False`: `/start` смотрит NocoDB `users` — нет записи → опрос, есть → главное меню. Флаг `True` принудительно всегда открывает опрос (отладка UI).
 - `/start` и `dispatch_start`: нет профиля → опрос, есть → меню. `get_user` без записи → `UserNotRegisteredError`; `@dp.error` ловит и зовёт `dispatch_start` (как /start).
 - `/start` (есть профиль) → «🏠 Главный экран | Сегодня» из реальных `food_logs`.
@@ -85,8 +89,16 @@ main.py
 - Локация двухшагово: «Поделиться локацией» (текст) → `request_location` + таймер 7 с; при тишине (GPS выкл., Telegram не шлёт update) — подсказка включить GPS.
 - `on_complete` в main: «Секунду...» → `set_profile` (upsert NocoDB) → edit «всё настроено» + `show_recognize`.
 
+### `proxy_config.py`
+
+- Точечный прокси только для Telegram и Gemini (VPS mihomo без TUN).
+- Env: `OUTBOUND_HTTPS_PROXY`, алиасы `TELEGRAM_PROXY` / `GEMINI_HTTPS_PROXY`.
+- `make_gemini_client`: `HttpOptions(client_args={proxy, trust_env=False})` — без глобального proxy env.
+- NocoDB (`urllib`), SMTP, Nominatim (`geopy`) — **без** этого прокси.
+
 ### `food_recognition.py`
 
+- Клиент Gemini через `make_gemini_client` (прокси на VPS).
 - Без изменений флоу Gemini/FSM; `persist_confirmed_food` → консоль + `on_food_saved` (запись в БД в main).
 
 ## Переменные окружения
@@ -95,6 +107,9 @@ main.py
 |---|---|
 | `GEMINI_API_KEY` | Ключ Google AI Studio / Gemini |
 | `TELEGRAM_BOT_API_KEY` | Токен бота @nutrisnap_ultra_bot (BotFather) |
+| `OUTBOUND_HTTPS_PROXY` | Общий локальный прокси для TG+Gemini (VPS: `http://127.0.0.1:7890`) |
+| `TELEGRAM_PROXY` | Опц. алиас прокси только для aiogram |
+| `GEMINI_HTTPS_PROXY` | Опц. алиас прокси только для google-genai |
 | `FEEDBACK_TO_EMAIL` | Куда слать отзывы (по умолчанию gog.ortey@yandex.ru) |
 | `SMTP_HOST` / `SMTP_PORT` | SMTP-сервер (по умолчанию smtp.yandex.ru:465) |
 | `SMTP_USER` / `SMTP_PASSWORD` | Логин и пароль приложения Yandex для отправки |
@@ -165,9 +180,15 @@ main.py
 
 ## Зависимости (по коду)
 
-- `python-dotenv`, `google-genai`, `pydantic`, `aiogram`, `timezonefinder`, `geopy`
+- `python-dotenv`, `google-genai`, `httpx`, `pydantic`, `aiogram`, `aiohttp-socks`, `timezonefinder`, `geopy`
+- Список в `requirements.txt`.
 
-Отдельного `requirements.txt` в корне пока нет.
+## Деплой VPS (Selectel / SkyNode-бот)
+
+- Перед стартом бота: mihomo на `127.0.0.1:7890` (`~/proxy/start_mihomo.sh`).
+- В `.env` на VPS: `OUTBOUND_HTTPS_PROXY=http://127.0.0.1:7890` (и/или TELEGRAM_/GEMINI_ алиасы).
+- Telegram + Gemini → прокси; NocoDB / SMTP Yandex / Nominatim → напрямую.
+- Не включать TUN / unit-wide `HTTP_PROXY` на процесс бота.
 
 ## Планируемое развитие
 

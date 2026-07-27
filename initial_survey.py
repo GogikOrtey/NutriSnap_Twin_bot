@@ -10,6 +10,8 @@ FSM-флоу стартового опроса: приветствие → ка�
 
 Локация: двухшагово (намерение → request_location) + таймаут 7 с на случай
 выключенного GPS (Telegram тогда не шлёт update боту).
+Gemini fallback ккал — через proxy_config.make_gemini_client (прокси на VPS).
+Nominatim / timezonefinder — без прокси.
 """
 
 from __future__ import annotations
@@ -38,6 +40,8 @@ from geopy.geocoders import Nominatim
 from google import genai
 from pydantic import BaseModel, Field
 from timezonefinder import TimezoneFinder
+
+from proxy_config import make_gemini_client
 
 #region Константы кнопок и тексты
 load_dotenv()
@@ -213,7 +217,8 @@ class DailyCaloriesResult(BaseModel):
 
 router = Router(name="initial_survey")
 _on_survey_complete: OnSurveyCompleteCallback | None = None
-_gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+# Тот же точечный прокси, что у food_recognition (Nominatim — без прокси).
+_gemini_client: genai.Client | None = make_gemini_client(GEMINI_API_KEY)
 _timezone_finder = TimezoneFinder()
 _geolocator = Nominatim(user_agent="NutriClickBot/1.0")
 # user_id → задача таймаута ожидания локации (GPS выкл. → Telegram ничего не шлёт).
