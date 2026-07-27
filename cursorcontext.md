@@ -41,7 +41,8 @@ main.py
   ├── db_nocodb.py                      # HTTP xc-token → NocoDB (без прокси)
   ├── include_router(menu_router)
   ├── include_router(setup_initial_survey(on_complete=_on_survey_complete))
-  │     └── … → set_profile (upsert users) → show_recognize
+  │     └── … → текст usage-reminder + параллельный set_profile → «🟩 Хорошо»
+  │           → show_recognize
   └── include_router(setup_food_recognition(..., on_food_saved=_on_food_saved))
         └── persist_confirmed_food → INSERT food_logs + trigger_reminders_for_food
 ```
@@ -62,11 +63,12 @@ main.py
 - Кэш `users` в `main.py`: `_user_cache` по telegram_id; `set_*` / `set_profile` — optimistic `_patch_user_cache` / `_put_user_cache` (без лишнего GET); `invalidate_user_cache` — fallback если кэша ещё нет. Singleflight + `_user_gen` для гонок.
 - Меньше roundtrip: `trigger_reminders_for_food` — один list + параллельные PATCH; `show_settings` — user∥reminders; toggle/delete reminder и delete food_log из FSM без ownership-GET; списки reminders/food_logs в FSM на пагинации.
 - После ✅ еды: `_on_food_saved` → `insert_food_log_from_result` (emoji в `details_json`) → `trigger_reminders_for_food`.
-- `_on_survey_complete`: «Секунду...» → `asyncio.to_thread(set_profile)` → edit того же сообщения на «Отлично, всё настроено…».
+- `_on_survey_complete`: сразу текст про usage-reminder + inline «🟩 Хорошо»; `set_profile` стартует параллельно (`_survey_profile_saves`). По кнопке — await upsert → «всё настроено» + `show_recognize`.
+- Usage-reminder: если `usage_reminder_enabled` и до 13:00 (TZ юзера) нет `food_logs` за логический день — фоновый `usage_reminder_loop` (раз/мин) шлёт сообщение и пишет `usage_reminder_sent_on`. Вкл/выкл: Настройки → Напоминания → «📲 Напоминание использования бота».
 - Сброс `is_triggered_today` при смене логических суток — process-local `_reminder_day_reset` (до полноценного cron).
 - `🎈` незавершённое: edit dish (`on_edit_dish_pick`), missed reminders (`check_missed_reminders`), перезапуск опроса из профиля, пересчёт ккал после смены goal.
 - ReplyKeyboard / Inline / логическая дата / FAQ / SMTP feedback — без изменений UX.
-- `main()`: `install_error_email_hooks` + `attach_asyncio_error_handler` перед polling.
+- `main()`: `install_error_email_hooks` + `attach_asyncio_error_handler` + `usage_reminder_loop` перед polling.
 
 ### `error_notify.py`
 
@@ -82,7 +84,7 @@ main.py
 
 - Транспорт: `urllib` + `xc-token` + UTF-8 JSON; `NocoDBError` при HTTP ≠ 2xx.
 - Table IDs: users=`meooj41uwpyrx9t`, food_logs=`mqhuz4edun8xpdc`, reminders=`m04n35tamrsu1wn`.
-- CRUD: `get_user` / `create_user` / `update_user` / `delete_user` / `upsert_profile`; food_logs list/insert/delete; reminders CRUD + toggle/snooze/mark_triggered.
+- CRUD: `get_user` / `create_user` / `update_user` / `delete_user` / `upsert_profile`; food_logs list/insert/delete; reminders CRUD + toggle/snooze/mark_triggered; usage-reminder: `set_usage_reminder_enabled` / `mark_usage_reminder_sent` / `list_users_with_usage_reminder`.
 - Связь владельца: поле Link `users: {id: telegram_id}` (не колонка `user_id`).
 - `sort` v3: JSON `[{"field":"…","direction":"asc"}]`.
 - `emoji` только внутри `details_json`; при чтении поднимается в плоское поле для UI.
@@ -102,7 +104,7 @@ main.py
 
 - Router `initial_survey` + FSM `SurveyFlow`: `welcome` → … → `timezone` / `timezone_location_wait` / `timezone_city` → `calories_confirm` / `calories_edit`.
 - Локация двухшагово: «Поделиться локацией» (текст) → `request_location` + таймер 7 с; при тишине (GPS выкл., Telegram не шлёт update) — подсказка включить GPS.
-- `on_complete` в main: «Секунду...» → `set_profile` (upsert NocoDB) → edit «всё настроено» + `show_recognize`.
+- `on_complete` в main: текст usage-reminder + параллельный `set_profile` → «🟩 Хорошо» → «всё настроено» + `show_recognize`.
 
 ### `proxy_config.py`
 
@@ -164,6 +166,8 @@ main.py
 | `day_change_hour` | INT (default 4) | Час смены суток (04:00) |
 | `last_active_at` | BIGINT | Unix time последней активности (заморозка >3 дней) |
 | `created_at` | BIGINT | Unix time регистрации |
+| `usage_reminder_enabled` | BOOLEAN (default True) | Напоминание «нет еды до 13:00» |
+| `usage_reminder_sent_on` | VARCHAR(10) | Дата YYYY-MM-DD последней отправки usage-reminder |
 
 ### Таблица `food_logs` (подтверждённые приёмы пищи)
 

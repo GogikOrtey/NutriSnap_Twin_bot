@@ -22,8 +22,9 @@ FAQ в настройках — обзор возможностей и отве�
 6. UserNotRegisteredError → error-handler → та же ветка, что /start;
    сбои БД/Gemini/сети → TECH_ISSUES_USER_TEXT + письмо 🟧🍎;
    прочие необработанные update-ошибки → report_console_error (🟨⬛🍎).
-7. main() — хуки error_notify + polling; Telegram-сессия через прокси при
-   TELEGRAM_PROXY / OUTBOUND_HTTPS_PROXY (VPS mihomo), иначе напрямую.
+7. main() — хуки error_notify + polling + фоновый usage-reminder (13:00);
+   Telegram-сессия через прокси при TELEGRAM_PROXY / OUTBOUND_HTTPS_PROXY
+   (VPS mihomo), иначе напрямую.
 8. DropStaleMessagesMiddleware — сообщения старше 10 мин (очередь после
    даунтайма) не обрабатываются; чату один раз пишется, что бот снова онлайн.
 """
@@ -49,7 +50,7 @@ from zoneinfo import ZoneInfo
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.filters import CommandStart, ExceptionTypeFilter
+from aiogram.filters import CommandStart, ExceptionTypeFilter, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -161,6 +162,7 @@ BTN_CONFIRM_RECALC_NO = "❌ Нет, оставить как есть"
 
 BTN_REM_ADD = "➕ Добавить напоминание"
 BTN_REM_LIST = "📋 Мои напоминания"
+BTN_REM_USAGE = "📲 Напоминание использования бота"
 BTN_REM_WINDOW_BREAKFAST = "🌅 Завтрак 07:00–11:00"
 BTN_REM_WINDOW_LUNCH = "☀️ Обед 12:00–16:00"
 BTN_REM_WINDOW_DINNER = "🌙 Ужин 17:00–22:00"
@@ -179,6 +181,26 @@ CALLBACK_DIARY_PREV = "diary:prev"
 CALLBACK_DIARY_NEXT = "diary:next"
 CALLBACK_REM_SNOOZE_PREFIX = "rem:snooze:"
 CALLBACK_REM_OK_PREFIX = "rem:ok:"
+# Inline под финалом опроса: подтвердить текст про usage-reminder.
+CALLBACK_SURVEY_USAGE_OK = "survey:usage_ok"
+
+# Напоминание «нет еды до 13:00» (локальное время пользователя).
+USAGE_REMINDER_HOUR = 13
+USAGE_REMINDER_CHECK_INTERVAL_SEC = 60
+SURVEY_USAGE_REMINDER_TEXT = (
+    "Мы добавили напоминание об использовании бота 🙂\n"
+    "\n"
+    "В первые дни легко забыть заглянуть сюда — поэтому если до 13:00 "
+    "не будет ни одной фиксации еды, бот мягко напомнит. "
+    "Работает каждый день; отключить можно в "
+    "Настройки → Напоминания → «Напоминание использования бота»"
+)
+USAGE_REMINDER_NOTIFY_TEXT = (
+    "Эй! Сегодня ещё нет ни одной записи о еде 🙂\n"
+    "Если уже поели — загляните и зафиксируйте, это займёт минуту\n"
+    "\n"
+    "Отключить: Настройки → Напоминания → «Напоминание использования бота»"
+)
 
 # Памятка экрана «Распознать» — также открывается после завершения первичного опроса.
 RECOGNIZE_HINT_TEXT = (
@@ -290,7 +312,11 @@ HELP_TOPIC_TEXTS: dict[str, str] = {
         "\n"
         "В списке напоминания можно включать, выключать и удалять. "
         "Если ботом долго не пользоваться — уведомления временно "
-        "замирают, чтобы не мешать"
+        "замирают, чтобы не мешать.\n"
+        "\n"
+        "Отдельно есть «📲 Напоминание использования бота»: если до "
+        "13:00 не было ни одной фиксации еды — бот мягко напомнит. "
+        "Его можно выключить в том же разделе"
     ),
     BTN_HELP_EXPORT: (
         "📤 Выгрузка журнала\n"
@@ -403,6 +429,7 @@ MENU_BUTTON_TEXTS: frozenset[str] = frozenset(
         BTN_CONFIRM_RECALC_NO,
         BTN_REM_ADD,
         BTN_REM_LIST,
+        BTN_REM_USAGE,
         BTN_REM_WINDOW_BREAKFAST,
         BTN_REM_WINDOW_LUNCH,
         BTN_REM_WINDOW_DINNER,
@@ -442,6 +469,8 @@ class MenuFlow(StatesGroup):
 #region Хранилище NocoDB (users / food_logs / reminders)
 # Логическая дата последнего сброса is_triggered_today (process-local, до cron).
 _reminder_day_reset: dict[int, str] = {}
+# Фоновый upsert профиля после опроса: user_id → Task (пока читают про reminder).
+_survey_profile_saves: dict[int, asyncio.Task[None]] = {}
 
 # Кэш профиля users по Telegram id (process-local, как MemoryStorage).
 _user_cache: dict[int, dict[str, Any]] = {}
@@ -672,6 +701,20 @@ def set_profile(
         daily_calories=daily_calories,
     )
     _put_user_cache(user_id, row)
+
+
+# Вкл/выкл users.usage_reminder_enabled + patch кэша.
+# Используется экраном «Напоминание использования бота».
+def set_usage_reminder_enabled(user_id: int, enabled: bool) -> None:
+    row = db.set_usage_reminder_enabled(user_id, enabled)
+    _put_user_cache(user_id, row)
+
+
+# Помечает, что usage-reminder уже отправлен за дату (антидубль).
+# Используется фоновым чекером после успешной отправки в чат.
+def mark_usage_reminder_sent(user_id: int, sent_on: str) -> None:
+    db.mark_usage_reminder_sent(user_id, sent_on)
+    _patch_user_cache(user_id, {"usage_reminder_sent_on": str(sent_on)})
 
 
 # Подписи типов обратной связи для писем и UI.
@@ -1328,9 +1371,37 @@ def kb_reminders() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=BTN_REM_ADD)],
             [KeyboardButton(text=BTN_REM_LIST)],
+            [KeyboardButton(text=BTN_REM_USAGE)],
             [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
         ],
         resize_keyboard=True,
+    )
+
+
+# Reply-клавиатура экрана вкл/выкл usage-reminder.
+# Используется show_usage_reminder_settings.
+def kb_usage_reminder_settings() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_REM_TOGGLE)],
+            [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# Inline «🟩 Хорошо» под текстом про usage-reminder после опроса.
+# Используется _on_survey_complete.
+def kb_survey_usage_ok() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🟩 Хорошо",
+                    callback_data=CALLBACK_SURVEY_USAGE_OK,
+                )
+            ]
+        ]
     )
 
 
@@ -1803,7 +1874,7 @@ def format_reminder_card(row: dict[str, Any]) -> str:
     )
 
 
-# Экран «🔔 Напоминания и Витамины»: описание + добавить / список.
+# Экран «🔔 Напоминания и Витамины»: описание + добавить / список / usage.
 # Используется пунктом настроек и возвратами из подфлоу напоминаний.
 async def show_reminders(message: Message, state: FSMContext) -> None:
     await state.set_state(None)
@@ -1820,9 +1891,37 @@ async def show_reminders(message: Message, state: FSMContext) -> None:
         "Напоминания работают каждый день; если не заходить в бота "
         f"больше {REMINDER_FREEZE_AFTER_DAYS} дней — они замораживаются.\n"
         "\n"
+        "Отдельно можно включить напоминание об использовании бота "
+        f"(если до {USAGE_REMINDER_HOUR:02d}:00 не было фиксаций еды).\n"
+        "\n"
         "Выберите действие:"
     )
     await replace_ui(message, state, text, reply_markup=kb_reminders())
+
+
+# Экран вкл/выкл напоминания «нет еды до 13:00».
+# Используется кнопкой BTN_REM_USAGE и после toggle.
+async def show_usage_reminder_settings(
+    message: Message, state: FSMContext
+) -> None:
+    await state.set_state(None)
+    await state.update_data(menu_screen="usage_reminder")
+    user_id = message.from_user.id if message.from_user else 0
+    user = get_user(user_id)
+    enabled = bool(user.get("usage_reminder_enabled", True))
+    status = "включено ✅" if enabled else "выключено ⏸"
+    text = (
+        "📲 Напоминание использования бота\n"
+        "\n"
+        f"Если до {USAGE_REMINDER_HOUR:02d}:00 по вашему часовому поясу "
+        "не будет ни одной фиксации еды — бот пришлёт мягкое напоминание. "
+        "Работает каждый день.\n"
+        "\n"
+        f"Сейчас: {status}"
+    )
+    await replace_ui(
+        message, state, text, reply_markup=kb_usage_reminder_settings()
+    )
 
 
 # Шлёт уведомления по сработавшим reminders после сохранения еды.
@@ -2001,8 +2100,8 @@ async def _on_food_saved(
     await notify_reminders_after_food(user_id, calories, bot, chat_id)
 
 
-# Колбэк после первичного опроса: upsert профиля в NocoDB → «всё настроено».
-# Сначала «Секунду...», затем edit того же сообщения (БД может отвечать 5–10 с).
+# Колбэк после первичного опроса: текст про usage-reminder + параллельный upsert.
+# Пока пользователь читает и жмёт «🟩 Хорошо», set_profile уже идёт в фоне.
 # Передаётся в initial_survey.setup_initial_survey(on_complete=...).
 async def _on_survey_complete(
     message: Message,
@@ -2014,8 +2113,8 @@ async def _on_survey_complete(
         profile.get("user_id")
         or (message.from_user.id if message.from_user else 0)
     )
-    wait_msg = await message.answer("Секунду...")
-    try:
+
+    async def _save_profile() -> None:
         await asyncio.to_thread(
             set_profile,
             user_id,
@@ -2029,7 +2128,57 @@ async def _on_survey_complete(
             timezone=str(profile["timezone"]),
             daily_calories=int(profile["daily_calories"]),
         )
+
+    prev = _survey_profile_saves.pop(user_id, None)
+    if prev is not None and not prev.done():
+        prev.cancel()
+    _survey_profile_saves[user_id] = asyncio.create_task(
+        _save_profile(),
+        name=f"survey-save-{user_id}",
+    )
+    await state.clear()
+    await message.answer(
+        SURVEY_USAGE_REMINDER_TEXT,
+        reply_markup=kb_survey_usage_ok(),
+    )
+
+
+# После «🟩 Хорошо»: дождаться upsert профиля → «всё настроено» + Распознать.
+# Используется inline-кнопкой под SURVEY_USAGE_REMINDER_TEXT.
+async def _finish_survey_after_usage_ok(
+    message: Message,
+    state: FSMContext,
+    *,
+    user_id: int,
+) -> None:
+    task = _survey_profile_saves.get(user_id)
+    wait_msg: Message | None = None
+
+    if task is None:
+        # Повторный клик / рестарт: профиль уже мог сохраниться в фоне.
+        try:
+            get_user(user_id)
+        except UserNotRegisteredError:
+            await message.answer(
+                "Не удалось сохранить профиль. Нажмите /start и попробуйте ещё раз"
+            )
+            return
+        await state.clear()
+        await message.answer(
+            "Отлично, всё настроено! ✅\n"
+            "\n"
+            "Теперь бот полностью готов к работе. Попробуй отправить фото "
+            "или описание еды в чат прямо сейчас"
+        )
+        await show_recognize(message, state)
+        return
+
+    if not task.done():
+        wait_msg = await message.answer("Секунду...")
+    try:
+        await task
     except Exception as e:
+        _survey_profile_saves.pop(user_id, None)
         is_ext = report_error_auto(
             f"survey set_profile failed user_id={user_id}: {e}",
             exc=e,
@@ -2039,11 +2188,17 @@ async def _on_survey_complete(
             if is_ext
             else "Не удалось сохранить профиль. Нажмите /start и попробуйте ещё раз"
         )
-        try:
-            await wait_msg.edit_text(fail_text)
-        except Exception:
-            await message.answer(fail_text)
+        if wait_msg is not None:
+            try:
+                await wait_msg.edit_text(fail_text)
+                return
+            except Exception:
+                pass
+        await message.answer(fail_text)
         return
+    finally:
+        _survey_profile_saves.pop(user_id, None)
+
     await state.clear()
     done_text = (
         "Отлично, всё настроено! ✅\n"
@@ -2051,9 +2206,12 @@ async def _on_survey_complete(
         "Теперь бот полностью готов к работе. Попробуй отправить фото "
         "или описание еды в чат прямо сейчас"
     )
-    try:
-        await wait_msg.edit_text(done_text)
-    except Exception:
+    if wait_msg is not None:
+        try:
+            await wait_msg.edit_text(done_text)
+        except Exception:
+            await message.answer(done_text)
+    else:
         await message.answer(done_text)
     await show_recognize(message, state)
 
@@ -2267,6 +2425,9 @@ async def on_back(message: Message, state: FSMContext) -> None:
         return
     if screen == "reminders":
         await show_settings(message, state)
+        return
+    if screen == "usage_reminder":
+        await show_reminders(message, state)
         return
     if screen == "feedback":
         await show_settings(message, state)
@@ -2939,6 +3100,36 @@ async def on_set_reminders(message: Message, state: FSMContext) -> None:
     await show_reminders(message, state)
 
 
+# Экран настройки напоминания «нет еды до 13:00».
+@menu_router.message(F.text == BTN_REM_USAGE)
+async def on_rem_usage_open(message: Message, state: FSMContext) -> None:
+    await show_usage_reminder_settings(message, state)
+
+
+# Вкл/выкл usage-reminder. StateFilter(None) — не перехватывать
+# BTN_REM_TOGGLE на карточке обычного напоминания (reminders_item_action).
+@menu_router.message(StateFilter(None), F.text == BTN_REM_TOGGLE)
+async def on_usage_reminder_toggle(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    if data.get("menu_screen") != "usage_reminder":
+        return
+    user_id = message.from_user.id if message.from_user else 0
+    user = get_user(user_id)
+    new_enabled = not bool(user.get("usage_reminder_enabled", True))
+    try:
+        await asyncio.to_thread(set_usage_reminder_enabled, user_id, new_enabled)
+    except Exception as e:
+        is_ext = report_error_auto(
+            f"set_usage_reminder_enabled failed user_id={user_id}: {e}",
+            exc=e,
+        )
+        await message.answer(
+            TECH_ISSUES_USER_TEXT if is_ext else "Не удалось сохранить настройку"
+        )
+        return
+    await show_usage_reminder_settings(message, state)
+
+
 # Старт добавления: запрос названия.
 @menu_router.message(F.text == BTN_REM_ADD)
 async def on_rem_add_start(message: Message, state: FSMContext) -> None:
@@ -3285,6 +3476,75 @@ async def on_rem_ok(callback: CallbackQuery, state: FSMContext) -> None:
             await callback.message.edit_reply_markup(reply_markup=None)
         except Exception:
             pass
+
+
+# Inline после опроса: «🟩 Хорошо» → дождаться create/upsert → Распознать.
+@menu_router.callback_query(F.data == CALLBACK_SURVEY_USAGE_OK)
+async def on_survey_usage_ok(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    user_id = callback.from_user.id if callback.from_user else 0
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await _finish_survey_after_usage_ok(
+            callback.message, state, user_id=user_id
+        )
+#endregion
+
+#region Usage-reminder (фон: нет еды до 13:00)
+# Кандидаты на напоминание: enabled, локальное время ≥ 13:00, ещё не слали
+# сегодня, food_logs за логический день пусты. Sync — вызывается из to_thread.
+# Используется usage_reminder_loop.
+def _collect_usage_reminder_targets() -> list[tuple[int, str]]:
+    targets: list[tuple[int, str]] = []
+    try:
+        users = db.list_users_with_usage_reminder()
+    except Exception as e:
+        report_error_auto(f"list_users_with_usage_reminder failed: {e}", exc=e)
+        return []
+    for user in users:
+        try:
+            tz_name = str(user.get("timezone") or "Europe/Moscow")
+            tz = ZoneInfo(tz_name)
+            now = datetime.now(tz)
+            if now.hour < USAGE_REMINDER_HOUR:
+                continue
+            today = logical_today(user)
+            if str(user.get("usage_reminder_sent_on") or "") == today:
+                continue
+            logs = get_food_logs_for_date(int(user["id"]), today)
+            if logs:
+                continue
+            targets.append((int(user["id"]), today))
+        except Exception as e:
+            report_console_error(
+                f"usage reminder target check user_id={user.get('id')}: {e}",
+                exc=e,
+            )
+    return targets
+
+
+# Фоновый цикл: раз в минуту ищет пользователей без еды после 13:00 и пишет им.
+# Используется main() рядом с polling.
+async def usage_reminder_loop(bot: Bot) -> None:
+    await asyncio.sleep(15)
+    while True:
+        try:
+            targets = await asyncio.to_thread(_collect_usage_reminder_targets)
+            for user_id, today in targets:
+                try:
+                    await bot.send_message(user_id, USAGE_REMINDER_NOTIFY_TEXT)
+                    await asyncio.to_thread(mark_usage_reminder_sent, user_id, today)
+                except Exception as e:
+                    report_console_error(
+                        f"usage reminder send failed user_id={user_id}: {e}",
+                        exc=e,
+                    )
+        except Exception as e:
+            report_console_error(f"usage_reminder_loop tick failed: {e}", exc=e)
+        await asyncio.sleep(USAGE_REMINDER_CHECK_INTERVAL_SEC)
 #endregion
 
 #region Запуск
@@ -3322,7 +3582,17 @@ async def main() -> None:
 
     bot = Bot(token=BOT_TOKEN, session=session) if session else Bot(token=BOT_TOKEN)
     print("🟩 Бот @nutrisnap_ultra_bot запущен. Нажми Ctrl+C для остановки", flush=True)
-    await dp.start_polling(bot)
+    usage_task = asyncio.create_task(
+        usage_reminder_loop(bot), name="usage-reminder-loop"
+    )
+    try:
+        await dp.start_polling(bot)
+    finally:
+        usage_task.cancel()
+        try:
+            await usage_task
+        except asyncio.CancelledError:
+            pass
 
 
 # Запуск: python main.py

@@ -3,8 +3,8 @@
 
 Зачем: единый HTTP-транспорт и хелперы таблиц users / food_logs / reminders
 вместо in-memory stub в main.py.
-Используется: main.py (профиль, дневник, напоминания), проверка запросов —
-через requests_DB_test.py до встраивания.
+Используется: main.py (профиль, дневник, напоминания, usage-reminder),
+проверка запросов — через requests_DB_test.py до встраивания.
 Опционально check_owner=False у delete_food_log / set_reminder_active /
 delete_reminder / snooze_reminder — без ownership-GET, когда id уже из FSM.
 """
@@ -181,6 +181,9 @@ def _link_user_id(fields: dict[str, Any]) -> int | None:
 # Нормализует профиль users к формату stub (плоский dict).
 # Используется get_user / upsert_profile / PATCH-хелперами.
 def _normalize_user(row: dict[str, Any]) -> dict[str, Any]:
+    # Нет поля / null → включено (дефолт онбординга); явное false — выкл.
+    ure_raw = row.get("usage_reminder_enabled")
+    usage_reminder_enabled = True if ure_raw is None else bool(ure_raw)
     return {
         "id": int(row["id"]),
         "first_name": row.get("first_name") or "",
@@ -195,6 +198,8 @@ def _normalize_user(row: dict[str, Any]) -> dict[str, Any]:
         "day_change_hour": int(row.get("day_change_hour") if row.get("day_change_hour") is not None else 4),
         "last_active_at": int(row.get("last_active_at") or 0),
         "created_at": int(row.get("created_at") or 0),
+        "usage_reminder_enabled": usage_reminder_enabled,
+        "usage_reminder_sent_on": str(row.get("usage_reminder_sent_on") or "").strip(),
     }
 
 
@@ -295,6 +300,8 @@ def upsert_profile(
                 **fields,
                 "day_change_hour": 4,
                 "created_at": now,
+                # Напоминание «не забыл ли бот» — вкл. с онбординга.
+                "usage_reminder_enabled": True,
             }
         )
     return update_user(user_id, fields)
@@ -322,6 +329,51 @@ def set_goal(user_id: int, goal: str) -> None:
 # Используется настройкой «Целевые ккал».
 def set_daily_calories(user_id: int, calories: int) -> None:
     update_user(user_id, {"daily_calories": int(calories)})
+
+
+# PATCH users.usage_reminder_enabled (напоминание «зафиксируй еду до 13:00»).
+# Используется экраном настроек «Напоминание использования бота».
+def set_usage_reminder_enabled(user_id: int, enabled: bool) -> dict[str, Any]:
+    return update_user(user_id, {"usage_reminder_enabled": bool(enabled)})
+
+
+# PATCH users.usage_reminder_sent_on = YYYY-MM-DD (антидубль за сутки).
+# Используется фоновым чекером usage-reminder после успешной отправки.
+def mark_usage_reminder_sent(user_id: int, sent_on: str) -> dict[str, Any]:
+    return update_user(user_id, {"usage_reminder_sent_on": str(sent_on)})
+
+
+# Список пользователей с включённым usage-reminder (пагинация page).
+# Используется фоновым чекером «нет еды до 13:00» в main.py.
+def list_users_with_usage_reminder(*, page_size: int = 200) -> list[dict[str, Any]]:
+    # Checkbox: true/1. Старые записи без поля — не попадут, пока не выставят
+    # дефолт в NocoDB или не пройдут upsert (create ставит True).
+    where = "(usage_reminder_enabled,eq,true)"
+    out: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        payload = call_api(
+            "GET",
+            records_url(TABLE_USERS),
+            query={
+                "where": where,
+                "pageSize": str(page_size),
+                "page": str(page),
+            },
+        )
+        rows = _list_records(payload)
+        for row in rows:
+            if "id" not in row:
+                continue
+            user = _normalize_user(row)
+            if user.get("usage_reminder_enabled"):
+                out.append(user)
+        if len(rows) < page_size:
+            break
+        page += 1
+        if page > 500:
+            break
+    return out
 
 
 # ---------------------------------------------------------------------------
