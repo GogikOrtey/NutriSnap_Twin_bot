@@ -5,6 +5,8 @@
 вместо in-memory stub в main.py.
 Используется: main.py (профиль, дневник, напоминания), проверка запросов —
 через requests_DB_test.py до встраивания.
+Опционально check_owner=False у delete_food_log / set_reminder_active /
+delete_reminder / snooze_reminder — без ownership-GET, когда id уже из FSM.
 """
 
 from __future__ import annotations
@@ -441,21 +443,24 @@ def insert_food_log(
     return _normalize_food_log(row)
 
 
-# DELETE food_logs по id (проверка владельца через GET).
-# Используется флоу «Удалить блюдо».
-def delete_food_log(user_id: int, log_id: int) -> bool:
-    try:
-        payload = call_api("GET", records_url(TABLE_FOOD_LOGS, log_id))
-    except NocoDBError as e:
-        if e.status == 404:
+# DELETE food_logs по id. check_owner=True → GET и проверка связи users.
+# Используется флоу «Удалить блюдо» (из FSM можно check_owner=False).
+def delete_food_log(
+    user_id: int, log_id: int, *, check_owner: bool = True
+) -> bool:
+    if check_owner:
+        try:
+            payload = call_api("GET", records_url(TABLE_FOOD_LOGS, log_id))
+        except NocoDBError as e:
+            if e.status == 404:
+                return False
+            raise
+        row = _first_record(payload)
+        if row is None:
             return False
-        raise
-    row = _first_record(payload)
-    if row is None:
-        return False
-    owner = _link_user_id(row)
-    if owner is not None and int(owner) != int(user_id):
-        return False
+        owner = _link_user_id(row)
+        if owner is not None and int(owner) != int(user_id):
+            return False
     call_api(
         "DELETE",
         records_url(TABLE_FOOD_LOGS),
@@ -563,22 +568,47 @@ def update_reminder(reminder_id: int, fields: dict[str, Any]) -> dict[str, Any] 
     return _normalize_reminder(row)
 
 
-# Вкл/выкл reminders.is_active.
-# Используется карточкой «Мои напоминания».
-def set_reminder_active(user_id: int, reminder_id: int, is_active: bool) -> bool:
-    row = get_reminder(user_id, reminder_id)
-    if row is None:
-        return False
-    update_reminder(reminder_id, {"is_active": bool(is_active)})
-    return True
+# Вкл/выкл reminders.is_active. check_owner=False — без GET (id из FSM).
+# Возвращает обновлённую строку или None. Используется карточкой напоминания.
+def set_reminder_active(
+    user_id: int,
+    reminder_id: int,
+    is_active: bool,
+    *,
+    check_owner: bool = True,
+) -> dict[str, Any] | None:
+    base: dict[str, Any] | None = None
+    if check_owner:
+        base = get_reminder(user_id, reminder_id)
+        if base is None:
+            return None
+    updated = update_reminder(reminder_id, {"is_active": bool(is_active)})
+    if updated is not None:
+        if base is not None:
+            merged = dict(base)
+            merged["is_active"] = bool(is_active)
+            return merged
+        return updated
+    if base is not None:
+        merged = dict(base)
+        merged["is_active"] = bool(is_active)
+        return merged
+    return {
+        "id": int(reminder_id),
+        "user_id": int(user_id),
+        "is_active": bool(is_active),
+    }
 
 
-# DELETE reminder (только своё).
+# DELETE reminder. check_owner=False — без GET (id из FSM).
 # Используется карточкой «Мои напоминания».
-def delete_reminder(user_id: int, reminder_id: int) -> bool:
-    row = get_reminder(user_id, reminder_id)
-    if row is None:
-        return False
+def delete_reminder(
+    user_id: int, reminder_id: int, *, check_owner: bool = True
+) -> bool:
+    if check_owner:
+        row = get_reminder(user_id, reminder_id)
+        if row is None:
+            return False
     call_api(
         "DELETE",
         records_url(TABLE_REMINDERS),
@@ -589,10 +619,13 @@ def delete_reminder(user_id: int, reminder_id: int) -> bool:
 
 # Сброс is_triggered_today (snooze «на следующую еду»).
 # Используется inline под уведомлением.
-def snooze_reminder(user_id: int, reminder_id: int) -> bool:
-    row = get_reminder(user_id, reminder_id)
-    if row is None:
-        return False
+def snooze_reminder(
+    user_id: int, reminder_id: int, *, check_owner: bool = True
+) -> bool:
+    if check_owner:
+        row = get_reminder(user_id, reminder_id)
+        if row is None:
+            return False
     update_reminder(reminder_id, {"is_triggered_today": False})
     return True
 

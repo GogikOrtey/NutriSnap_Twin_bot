@@ -31,7 +31,7 @@ import os
 import smtplib
 import threading
 import time
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta
 from email import encoders
 from email.mime.base import MIMEBase
@@ -477,7 +477,7 @@ def _ensure_user_fetch(user_id: int) -> Future[dict[str, Any] | None]:
 
 
 # Помечает кэш users устаревшим и сразу запускает один GET (не дублируя inflight).
-# Используется после PATCH/upsert профиля (set_day_change_hour / set_goal / …).
+# Используется когда локально нет полного профиля для optimistic patch.
 def invalidate_user_cache(user_id: int) -> None:
     if not user_id:
         return
@@ -485,6 +485,33 @@ def invalidate_user_cache(user_id: int) -> None:
         _user_stale.add(user_id)
         _user_gen[user_id] = _user_gen.get(user_id, 0) + 1
     _ensure_user_fetch(user_id)
+
+
+# Патчит поля в кэше users без HTTP; нет записи → invalidate+GET.
+# Используется после set_day_change_hour / set_goal / set_daily_calories / touch.
+def _patch_user_cache(user_id: int, fields: dict[str, Any]) -> None:
+    if not user_id:
+        return
+    with _user_cache_lock:
+        row = _user_cache.get(user_id)
+        if row is not None:
+            row.update(fields)
+            _user_stale.discard(user_id)
+            # Бамп gen: GET «до PATCH» не перезапишет оптимистичный кэш.
+            _user_gen[user_id] = _user_gen.get(user_id, 0) + 1
+            return
+    invalidate_user_cache(user_id)
+
+
+# Кладёт полный профиль в кэш (после upsert_profile).
+# Используется set_profile.
+def _put_user_cache(user_id: int, row: dict[str, Any]) -> None:
+    if not user_id:
+        return
+    with _user_cache_lock:
+        _user_cache[user_id] = dict(row)
+        _user_stale.discard(user_id)
+        _user_gen[user_id] = _user_gen.get(user_id, 0) + 1
 
 
 # Профиль пользователя: кэш по telegram_id, иначе GET (с ожиданием inflight).
@@ -515,12 +542,9 @@ def get_user(user_id: int) -> dict[str, Any]:
 # Обновляет users.last_active_at (для заморозки напоминаний через 3 дня).
 # Используется при активности в боте и перед проверкой триггеров.
 def touch_user_activity(user_id: int) -> None:
-    db.touch_user_activity(user_id)
     now = int(time.time())
-    with _user_cache_lock:
-        row = _user_cache.get(user_id)
-        if row is not None:
-            row["last_active_at"] = now
+    db.touch_user_activity(user_id)
+    _patch_user_cache(user_id, {"last_active_at": now})
 
 
 # Записи дневника за логическую дату YYYY-MM-DD.
@@ -539,8 +563,10 @@ def get_food_logs_range(
 
 # Удаление записи food_logs по id (только свои).
 # Используется флоу «Удалить блюдо» в дневнике.
-def delete_food_log(user_id: int, log_id: int) -> bool:
-    return db.delete_food_log(user_id, log_id)
+def delete_food_log(
+    user_id: int, log_id: int, *, check_owner: bool = True
+) -> bool:
+    return db.delete_food_log(user_id, log_id, check_owner=check_owner)
 
 
 # INSERT food_logs после ✅ распознавания (emoji → details_json).
@@ -566,28 +592,28 @@ def insert_food_log_from_result(
     )
 
 
-# Обновление day_change_hour в users + инвалидация кэша.
+# Обновление day_change_hour в users + optimistic patch кэша.
 # Используется настройкой «Время смены суток».
 def set_day_change_hour(user_id: int, hour: int) -> None:
     db.set_day_change_hour(user_id, hour)
-    invalidate_user_cache(user_id)
+    _patch_user_cache(user_id, {"day_change_hour": int(hour)})
 
 
-# Обновление goal в users + инвалидация кэша.
+# Обновление goal в users + optimistic patch кэша.
 # Используется настройкой «Тип отслеживания».
 def set_goal(user_id: int, goal: str) -> None:
     db.set_goal(user_id, goal)
-    invalidate_user_cache(user_id)
+    _patch_user_cache(user_id, {"goal": goal})
 
 
-# Обновление daily_calories в users + инвалидация кэша.
+# Обновление daily_calories в users + optimistic patch кэша.
 # Используется настройкой «Целевые ккал».
 def set_daily_calories(user_id: int, calories: int) -> None:
     db.set_daily_calories(user_id, calories)
-    invalidate_user_cache(user_id)
+    _patch_user_cache(user_id, {"daily_calories": int(calories)})
 
 
-# Запись полей профиля из первичного опроса + инвалидация кэша.
+# Запись полей профиля из первичного опроса + кладёт ответ upsert в кэш.
 # Используется on_survey_complete после прохождения initial_survey.
 def set_profile(
     user_id: int,
@@ -602,7 +628,7 @@ def set_profile(
     timezone: str,
     daily_calories: int,
 ) -> None:
-    db.upsert_profile(
+    row = db.upsert_profile(
         user_id,
         first_name=first_name,
         gender=gender,
@@ -614,7 +640,7 @@ def set_profile(
         timezone=timezone,
         daily_calories=daily_calories,
     )
-    invalidate_user_cache(user_id)
+    _put_user_cache(user_id, row)
 
 
 # Подписи типов обратной связи для писем и UI.
@@ -729,28 +755,62 @@ def add_reminder(
 
 
 # Вкл/выкл напоминания (reminders.is_active).
-# Используется карточкой «Мои напоминания».
-def set_reminder_active(user_id: int, reminder_id: int, is_active: bool) -> bool:
-    return db.set_reminder_active(user_id, reminder_id, is_active)
+# Используется карточкой «Мои напоминания». check_owner=False если id из FSM.
+def set_reminder_active(
+    user_id: int,
+    reminder_id: int,
+    is_active: bool,
+    *,
+    check_owner: bool = True,
+) -> dict[str, Any] | None:
+    return db.set_reminder_active(
+        user_id, reminder_id, is_active, check_owner=check_owner
+    )
 
 
 # Удаление напоминания.
-# Используется карточкой «Мои напоминания».
-def delete_reminder(user_id: int, reminder_id: int) -> bool:
-    return db.delete_reminder(user_id, reminder_id)
+# Используется карточкой «Мои напоминания». check_owner=False если id из FSM.
+def delete_reminder(
+    user_id: int, reminder_id: int, *, check_owner: bool = True
+) -> bool:
+    return db.delete_reminder(user_id, reminder_id, check_owner=check_owner)
+
+
+# Параллельный PATCH нескольких reminders (одно поле на id).
+# Используется сбросом суток и mark_triggered после еды.
+def _patch_reminders_parallel(
+    reminder_ids: list[int], fields: dict[str, Any]
+) -> None:
+    if not reminder_ids:
+        return
+    workers = min(8, len(reminder_ids))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [
+            pool.submit(db.update_reminder, rid, fields) for rid in reminder_ids
+        ]
+        for fut in futs:
+            fut.result()
 
 
 # Сброс is_triggered_today при смене логических суток (process-local дата).
+# rows — уже загруженный список (чтобы не делать второй GET). Возвращает актуальный list.
 # Используется перед проверкой триггеров после сохранения еды.
-def _reset_reminder_triggers_if_new_day(user_id: int) -> None:
+def _reset_reminder_triggers_if_new_day(
+    user_id: int, rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     user = get_user(user_id)
     today = logical_today(user)
     if _reminder_day_reset.get(user_id) == today:
-        return
-    for row in get_reminders(user_id):
-        if row.get("is_triggered_today"):
-            db.update_reminder(int(row["id"]), {"is_triggered_today": False})
+        return rows
+    to_reset = [int(r["id"]) for r in rows if r.get("is_triggered_today")]
+    if to_reset:
+        _patch_reminders_parallel(to_reset, {"is_triggered_today": False})
+        rows = [
+            {**r, "is_triggered_today": False} if r.get("is_triggered_today") else r
+            for r in rows
+        ]
     _reminder_day_reset[user_id] = today
+    return rows
 
 
 # Пользователь «заморожен» по last_active_at (нет активности > N дней).
@@ -765,23 +825,28 @@ def reminders_frozen(user_id: int) -> bool:
 
 # Перенос сработавшего напоминания на следующую еду (сброс is_triggered_today).
 # Используется inline «⏰ На следующую еду» под уведомлением.
-def snooze_reminder(user_id: int, reminder_id: int) -> bool:
-    return db.snooze_reminder(user_id, reminder_id)
+def snooze_reminder(
+    user_id: int, reminder_id: int, *, check_owner: bool = True
+) -> bool:
+    return db.snooze_reminder(user_id, reminder_id, check_owner=check_owner)
 
 
 # После INSERT в food_logs: активные reminders в текущем окне времени,
 # calories >= min_calories, ещё не срабатывали сегодня → пометить и вернуть список.
+# Один GET reminders + параллельные PATCH; без повторного list.
 # Используется колбэком on_food_saved из food_recognition.
 def trigger_reminders_for_food(
     user_id: int, calories: int
 ) -> list[dict[str, Any]]:
     touch_user_activity(user_id)
-    _reset_reminder_triggers_if_new_day(user_id)
+    rows = get_reminders(user_id)
+    rows = _reset_reminder_triggers_if_new_day(user_id, rows)
     user = get_user(user_id)
     now_hm = datetime.now(ZoneInfo(user["timezone"])).strftime("%H:%M")
     kcal = int(calories or 0)
     triggered: list[dict[str, Any]] = []
-    for row in get_reminders(user_id):
+    mark_ids: list[int] = []
+    for row in rows:
         if not row.get("is_active"):
             continue
         if row.get("is_triggered_today"):
@@ -790,15 +855,16 @@ def trigger_reminders_for_food(
             continue
         if kcal < int(row.get("min_calories") or 0):
             continue
-        db.mark_reminder_triggered(int(row["id"]))
-        row = dict(row)
-        row["is_triggered_today"] = True
-        triggered.append(row)
+        mark_ids.append(int(row["id"]))
+        updated = dict(row)
+        updated["is_triggered_today"] = True
+        triggered.append(updated)
         print(
-            f"reminder triggered user_id={user_id} id={row['id']} "
-            f"title={row['title']!r} kcal={kcal}",
+            f"reminder triggered user_id={user_id} id={updated['id']} "
+            f"title={updated['title']!r} kcal={kcal}",
             flush=True,
         )
+    _patch_reminders_parallel(mark_ids, {"is_triggered_today": True})
     return triggered
 
 
@@ -1599,8 +1665,12 @@ async def show_settings(message: Message, state: FSMContext) -> None:
     await state.set_state(None)
     await state.update_data(export_return="settings", menu_screen="settings")
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
-    rem_count = len(get_reminders(user_id))
+    # user и reminders независимы по user_id — один roundtrip-стенд вместо двух.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_user = pool.submit(get_user, user_id)
+        fut_rems = pool.submit(get_reminders, user_id)
+        user = fut_user.result()
+        rem_count = len(fut_rems.result())
     text = (
         "⚙️ Настройки\n"
         "\n"
@@ -2157,6 +2227,7 @@ async def on_edit_dish(message: Message, state: FSMContext) -> None:
     await state.update_data(
         menu_screen="diary",
         pick_logs=[r["id"] for r in logs],
+        pick_log_rows=logs,
         pick_page=0,
     )
     if not logs:
@@ -2213,6 +2284,7 @@ async def on_delete_dish(message: Message, state: FSMContext) -> None:
     await state.update_data(
         menu_screen="diary",
         pick_logs=[r["id"] for r in logs],
+        pick_log_rows=logs,
         pick_page=0,
     )
     if not logs:
@@ -2247,7 +2319,8 @@ async def on_delete_dish_pick(message: Message, state: FSMContext) -> None:
         return
     log_id = pick_ids[idx - 1]
     user_id = message.from_user.id if message.from_user else 0
-    delete_food_log(user_id, log_id)
+    # id из своего FSM pick_logs — без лишнего GET владельца.
+    delete_food_log(user_id, log_id, check_owner=False)
     await state.set_state(None)
     await show_diary(message, state)
 
@@ -2278,14 +2351,20 @@ async def on_dish_pick_page(message: Message, state: FSMContext) -> None:
 
     user_id = message.from_user.id if message.from_user else 0
     user = get_user(user_id)
-    offset = int(data.get("diary_offset", 0))
-    logged_date = logical_date_with_offset(user, offset)
-    logs = get_food_logs_for_date(user_id, logged_date)
-    # Сохраняем порядок/состав pick_logs; для текста берём актуальные записи по id.
-    id_to_log = {r["id"]: r for r in logs}
-    ordered = [id_to_log[i] for i in pick_ids if i in id_to_log]
+    cached_rows: list[dict[str, Any]] = list(data.get("pick_log_rows") or [])
+    if cached_rows:
+        id_to_log = {r["id"]: r for r in cached_rows}
+        ordered = [id_to_log[i] for i in pick_ids if i in id_to_log]
+    else:
+        offset = int(data.get("diary_offset", 0))
+        logged_date = logical_date_with_offset(user, offset)
+        logs = get_food_logs_for_date(user_id, logged_date)
+        id_to_log = {r["id"]: r for r in logs}
+        ordered = [id_to_log[i] for i in pick_ids if i in id_to_log]
+        await state.update_data(pick_log_rows=logs)
+    # Сохраняем порядок/состав pick_logs; для текста берём записи из FSM-кэша.
     if len(ordered) != total:
-        ordered = logs
+        ordered = cached_rows if cached_rows else ordered
         await state.update_data(pick_logs=[r["id"] for r in ordered])
         total = len(ordered)
 
@@ -2864,6 +2943,7 @@ async def on_rem_list(message: Message, state: FSMContext) -> None:
     await state.update_data(
         menu_screen="reminders",
         rem_pick_ids=[r["id"] for r in rows],
+        rem_rows=rows,
         pick_page=0,
     )
     await replace_ui(
@@ -2894,8 +2974,11 @@ async def on_rem_list_page(message: Message, state: FSMContext) -> None:
     elif message.text == BTN_PICK_PAGE_PREV and page > 0:
         page -= 1
     await state.update_data(pick_page=page)
-    user_id = message.from_user.id if message.from_user else 0
-    rows = get_reminders(user_id)
+    rows: list[dict[str, Any]] = list(data.get("rem_rows") or [])
+    if not rows:
+        user_id = message.from_user.id if message.from_user else 0
+        rows = get_reminders(user_id)
+        await state.update_data(rem_rows=rows)
     await replace_ui(
         message,
         state,
@@ -2924,12 +3007,20 @@ async def on_rem_list_pick(message: Message, state: FSMContext) -> None:
         await message.answer(f"Нужен номер от 1 до {len(pick_ids)}")
         return
     user_id = message.from_user.id if message.from_user else 0
-    row = get_reminder(user_id, pick_ids[idx - 1])
+    rem_id = pick_ids[idx - 1]
+    cached: list[dict[str, Any]] = list(data.get("rem_rows") or [])
+    row = next((r for r in cached if int(r.get("id") or 0) == rem_id), None)
+    if row is None:
+        row = get_reminder(user_id, rem_id)
     if row is None:
         await show_reminders(message, state)
         return
     await state.set_state(MenuFlow.reminders_item_action)
-    await state.update_data(rem_edit_id=row["id"], menu_screen="reminders")
+    await state.update_data(
+        rem_edit_id=row["id"],
+        rem_edit_row=row,
+        menu_screen="reminders",
+    )
     await replace_ui(
         message,
         state,
@@ -2944,13 +3035,25 @@ async def on_rem_toggle(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     rem_id = int(data.get("rem_edit_id") or 0)
     user_id = message.from_user.id if message.from_user else 0
-    row = get_reminder(user_id, rem_id)
+    base = dict(data.get("rem_edit_row") or {})
+    new_active = not bool(base.get("is_active", True))
+    # id из FSM — один PATCH без GET владельца и без повторного GET карточки.
+    row = set_reminder_active(
+        user_id, rem_id, new_active, check_owner=False
+    )
     if row is None:
         await show_reminders(message, state)
         return
-    set_reminder_active(user_id, rem_id, not bool(row.get("is_active")))
-    row = get_reminder(user_id, rem_id)
-    assert row is not None
+    if base:
+        merged = dict(base)
+        merged["is_active"] = bool(row.get("is_active", new_active))
+        row = merged
+    rem_rows: list[dict[str, Any]] = list(data.get("rem_rows") or [])
+    rem_rows = [
+        ({**r, "is_active": row["is_active"]} if int(r.get("id") or 0) == rem_id else r)
+        for r in rem_rows
+    ]
+    await state.update_data(rem_edit_row=row, rem_rows=rem_rows)
     await replace_ui(
         message,
         state,
@@ -2966,14 +3069,17 @@ async def on_rem_toggle(message: Message, state: FSMContext) -> None:
 async def on_rem_delete_ask(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     rem_id = int(data.get("rem_edit_id") or 0)
-    user_id = message.from_user.id if message.from_user else 0
-    row = get_reminder(user_id, rem_id)
-    if row is None:
+    row = dict(data.get("rem_edit_row") or {})
+    if not row:
+        user_id = message.from_user.id if message.from_user else 0
+        fetched = get_reminder(user_id, rem_id)
+        row = dict(fetched or {})
+    if not row:
         await show_reminders(message, state)
         return
     title = str(row.get("title") or "напоминание")
     await state.set_state(MenuFlow.reminders_delete_confirm)
-    await state.update_data(menu_screen="reminders")
+    await state.update_data(menu_screen="reminders", rem_edit_row=row)
     await replace_ui(
         message,
         state,
@@ -2992,13 +3098,14 @@ async def on_rem_delete_yes(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     rem_id = int(data.get("rem_edit_id") or 0)
     user_id = message.from_user.id if message.from_user else 0
-    title = ""
-    row = get_reminder(user_id, rem_id)
-    if row:
-        title = str(row.get("title") or "")
-    delete_reminder(user_id, rem_id)
+    row = dict(data.get("rem_edit_row") or {})
+    title = str(row.get("title") or "")
+    # id из FSM — один DELETE без GET.
+    delete_reminder(user_id, rem_id, check_owner=False)
     await state.set_state(None)
-    await state.update_data(menu_screen="reminders", rem_edit_id=None)
+    await state.update_data(
+        menu_screen="reminders", rem_edit_id=None, rem_edit_row=None
+    )
     await replace_ui(
         message,
         state,
@@ -3012,9 +3119,12 @@ async def on_rem_delete_yes(message: Message, state: FSMContext) -> None:
 async def on_rem_delete_no(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     rem_id = int(data.get("rem_edit_id") or 0)
-    user_id = message.from_user.id if message.from_user else 0
-    row = get_reminder(user_id, rem_id)
-    if row is None:
+    row = dict(data.get("rem_edit_row") or {})
+    if not row:
+        user_id = message.from_user.id if message.from_user else 0
+        fetched = get_reminder(user_id, rem_id)
+        row = dict(fetched or {})
+    if not row:
         await show_reminders(message, state)
         return
     await state.set_state(MenuFlow.reminders_item_action)

@@ -271,7 +271,7 @@ def test_reminders_crud() -> None:
     one2 = db.get_reminder(TEST_USER_ID, rem_id)
     _ok(
         "PATCH is_active=False",
-        toggled and one2 is not None and one2["is_active"] is False,
+        toggled is not None and one2 is not None and one2["is_active"] is False,
     )
 
     db.mark_reminder_triggered(rem_id)
