@@ -108,6 +108,61 @@ main.py
 | `FEEDBACK_TO_EMAIL` | Куда слать отзывы (по умолчанию gog.ortey@yandex.ru) |
 | `SMTP_HOST` / `SMTP_PORT` | SMTP-сервер (по умолчанию smtp.yandex.ru:465) |
 | `SMTP_USER` / `SMTP_PASSWORD` | Логин и пароль приложения Yandex для отправки |
+| `NOCODB_SKYNODE_API_KEY` | API-токен NocoDB (SkyNode VPS); токены: `https://skynode.nocodb.api.gogortey.ru/account/tokens` |
+
+## База данных (NocoDB / SkyNode)
+
+- БД развёрнута на VPS **SkyNode**; доступ из бота — **только через API NocoDB** (не прямой SQL).
+- База API: `https://skynode.nocodb.api.gogortey.ru`
+- Swagger: `https://skynode.nocodb.api.gogortey.ru/api/v3/meta/bases/p6iywpukq1yiryf/swagger`
+- Ключ: `NOCODB_SKYNODE_API_KEY` в `.env`. Пока stub (`🔰`) в коде; реальные запросы — в процессе подключения.
+- Полное описание схемы также в `add_info.md` (раздел «Структура БД»).
+
+### Таблица `users` (профиль)
+
+| Поле | Тип | Назначение |
+|---|---|---|
+| `id` | BIGINT PK | Telegram ID (`from_user.id`) |
+| `first_name` | VARCHAR(100) | Имя |
+| `gender` | VARCHAR(10) | `'male'` / `'female'` |
+| `age` | INT | Возраст (для нормы ккал) |
+| `height` | FLOAT | Рост, см |
+| `weight` | FLOAT | Вес, кг |
+| `activity_level` | FLOAT | Коэфф. активности (1.2, 1.375, 1.55…) |
+| `goal` | VARCHAR(20) | `'weight_loss'` / `'muscle_gain'` / `'maintain'` |
+| `daily_calories` | INT | Целевая суточная норма ккал |
+| `timezone` | VARCHAR(50) | IANA, напр. `'Europe/Moscow'` |
+| `day_change_hour` | INT (default 4) | Час смены суток (04:00) |
+| `last_active_at` | BIGINT | Unix time последней активности (заморозка >3 дней) |
+| `created_at` | BIGINT | Unix time регистрации |
+
+### Таблица `food_logs` (подтверждённые приёмы пищи)
+
+Поля `title`/`calories`/`proteins`/`fats`/`carbs`/`portion_g` ↔ `FoodResult` (`dish` → `title`). Индекс: `(user_id, logged_date)`.
+
+| Поле | Тип | Назначение |
+|---|---|---|
+| `id` | BIGINT PK | Автоинкремент |
+| `user_id` | BIGINT FK → users.id | Владелец |
+| `title` | VARCHAR(255) | Название блюда (`FoodResult.dish`) |
+| `calories` | INT | ккал |
+| `proteins` / `fats` / `carbs` | FLOAT | БЖУ, г |
+| `portion_g` | FLOAT | Вес порции, г |
+| `logged_date` | VARCHAR(10) | Логическая дата `YYYY-MM-DD` (сдвиг `day_change_hour`) |
+| `created_at` | BIGINT | Unix time добавления |
+| `details_json` | JSONB/TEXT | Сырой JSON Gemini (`FoodResult.model_dump_json()`; в т.ч. `emoji`) |
+
+### Таблица `reminders` (напоминания / витамины)
+
+| Поле | Тип | Назначение |
+|---|---|---|
+| `id` | BIGINT PK | Автоинкремент |
+| `user_id` | BIGINT FK → users.id | Владелец |
+| `title` | VARCHAR(255) | Текст («Выпить Омега-3») |
+| `time_start` / `time_end` | VARCHAR(5) | Окно `'HH:MM'` |
+| `min_calories` | INT (default 0) | `0` — любая еда; `>=250` — крупный приём |
+| `is_triggered_today` | BOOLEAN (default False) | Уже сработало за текущие сутки |
+| `is_active` | BOOLEAN (default True) | Вкл/выкл пользователем |
 
 ## Зависимости (по коду)
 
@@ -117,7 +172,7 @@ main.py
 
 ## Планируемое развитие
 
-- Подключить реальную БД вместо `🔰` stub в `main.py` и `save_to_console`.
+- Заменить `🔰` stub на запросы к NocoDB API (таблицы `users` / `food_logs` / `reminders`).
 - Хранить в БД «прошёл ли опрос»; выключить `INITIAL_SURVEY_ENABLED` и роутить по БД.
 - Подключить «Обновить данные пользователя» к `start_initial_survey`.
 - Планировщик «пропущенных» напоминаний по концу окна + сброс `is_triggered_today` по `day_change_hour`.
