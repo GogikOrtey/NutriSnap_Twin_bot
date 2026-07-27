@@ -21,7 +21,7 @@ food_recognition.py — FSM-флоу распознавания еды для Nu
 9. Хендлеры: фото, подсказка, вес, текст, callbacks, меню правок.
 10. setup_food_recognition — MemoryStorage + тексты меню / «🏠» + on_food_saved; возвращает router.
     Reply «🏠» скрыта с отправки фото/текста до ✅ или отмены после «✏️ Изменить».
-    После ✅/авто-✅ вызывается on_food_saved (в main — триггер reminders).
+    После ✅/авто-✅ вызывается on_food_saved (в main — INSERT food_logs + reminders).
 """
 
 from __future__ import annotations
@@ -482,7 +482,8 @@ def save_to_console(result: FoodResult) -> None:
     )
 
 
-# «Сохраняет» подтверждённый результат (консоль) и вызывает on_food_saved (reminders).
+# «Сохраняет» подтверждённый результат (консоль) и вызывает on_food_saved
+# (в main — INSERT food_logs + триггер reminders).
 # Используется при ✅ / автотаймауте / после пересчёта веса этикетки.
 async def persist_confirmed_food(
     result: FoodResult,

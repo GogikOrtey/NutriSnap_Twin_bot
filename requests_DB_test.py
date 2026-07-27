@@ -16,11 +16,8 @@ Swagger: https://skynode.nocodb.api.gogortey.ru/api/v3/meta/bases/p6iywpukq1yiry
 from __future__ import annotations
 
 import json
-import os
 import sys
-import urllib.error
-import urllib.request
-from typing import Any
+import time
 
 from dotenv import load_dotenv
 
@@ -30,142 +27,277 @@ load_dotenv()
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-# --- Константы NocoDB (SkyNode) ---
-NOCODB_BASE_URL = "https://skynode.nocodb.api.gogortey.ru"
-NOCODB_BASE_ID = "p6iywpukq1yiryf"
-# ID таблиц (из Swagger / URL records)
-TABLE_USERS = "meooj41uwpyrx9t"
-# TABLE_FOOD_LOGS = "..."  # подставить, когда понадобится
-# TABLE_REMINDERS = "..."  # подставить, когда понадобится
+import db_nocodb as db
 
-API_KEY = os.getenv("NOCODB_SKYNODE_API_KEY", "").strip()
+# Тестовый Telegram ID (не пересекается с реальными пользователями)
+TEST_USER_ID = 900000001
 
 
-def _records_url(table_id: str, record_id: str | int | None = None) -> str:
-    """Собирает URL списка записей или одной записи таблицы NocoDB v3 data API."""
-    base = f"{NOCODB_BASE_URL}/api/v3/data/{NOCODB_BASE_ID}/{table_id}/records"
-    if record_id is None:
-        return base
-    return f"{base}/{record_id}"
-
-
-def call_api(
-    method: str,
-    url: str,
-    *,
-    body: dict[str, Any] | list[Any] | None = None,
-    label: str | None = None,
-) -> dict[str, Any] | list[Any] | None:
-    """
-    Выполняет HTTP-запрос к NocoDB и печатает статус + pretty JSON.
-    Используется в этом файле для ручной проверки запросов.
-    Возвращает распарсенный JSON или None при ошибке/пустом теле.
-    """
-    if not API_KEY:
-        print("ERROR: NOCODB_SKYNODE_API_KEY не задан в .env")
-        sys.exit(1)
-
-    title = label or f"{method.upper()} {url}"
-    print("=" * 60)
-    print(title)
-    print("=" * 60)
-
-    data: bytes | None = None
-    headers = {
-        "accept": "application/json",
-        "xc-token": API_KEY,
-    }
-    if body is not None:
-        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-
-    req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            status = resp.status
-            raw = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as e:
-        status = e.code
-        raw = e.read().decode("utf-8", errors="replace")
-        print(f"HTTP {status}")
-        _print_body(raw)
-        return None
-    except urllib.error.URLError as e:
-        print(f"URL error: {e.reason}")
-        return None
-
-    print(f"HTTP {status}")
-    parsed = _print_body(raw)
-    print()
-    return parsed
-
-
-def _print_body(raw: str) -> dict[str, Any] | list[Any] | None:
-    """Печатает тело ответа: pretty JSON, если получилось распарсить."""
-    if not raw.strip():
-        print("(пустое тело)")
-        return None
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        print(raw)
-        return None
-    print(json.dumps(parsed, ensure_ascii=False, indent=2))
-    return parsed
+def _ok(label: str, cond: bool, detail: str = "") -> None:
+    status = "OK" if cond else "FAIL"
+    extra = f" — {detail}" if detail else ""
+    print(f"[{status}] {label}{extra}")
+    if not cond:
+        raise SystemExit(1)
 
 
 # ---------------------------------------------------------------------------
-# Готовые запросы — добавляй новые функции по образцу и вызывай их в main
+# users
 # ---------------------------------------------------------------------------
 
 
-def get_all_users() -> dict[str, Any] | list[Any] | None:
-    """GET всех записей таблицы users. Пример ответа: { records: [...], nestedNext }."""
-    return call_api(
-        "GET",
-        _records_url(TABLE_USERS),
-        label="GET all users",
+def test_users_crud() -> None:
+    """GET / POST / PATCH / DELETE users с реалистичными полями опроса."""
+    print("\n=== test_users_crud ===\n")
+
+    try:
+        db.delete_user(TEST_USER_ID)
+        print("(cleanup: deleted leftover test user)")
+    except db.NocoDBError as e:
+        if e.status not in (404, 400):
+            print(f"(cleanup skip: {e})")
+
+    missing = db.get_user(TEST_USER_ID)
+    _ok("GET missing user → None", missing is None)
+
+    now = int(time.time())
+    created = db.create_user(
+        {
+            "id": TEST_USER_ID,
+            "first_name": "ТестОпрос",
+            "gender": "male",
+            "age": 28,
+            "height": 178.0,
+            "weight": 75.0,
+            "activity_level": 1.375,
+            "goal": "weight_loss",
+            "daily_calories": 2200,
+            "timezone": "Europe/Moscow",
+            "day_change_hour": 4,
+            "created_at": now,
+            "last_active_at": now,
+        }
+    )
+    _ok(
+        "POST create user",
+        created.get("id") == TEST_USER_ID and created.get("first_name") == "ТестОпрос",
+        json.dumps(created, ensure_ascii=False),
     )
 
-
-def create_user(fields: dict[str, Any]) -> dict[str, Any] | list[Any] | None:
-    """
-    POST новой записи в users.
-    Body по Swagger: {"fields": {...}}; обязателен id (Telegram ID, не autoincrement).
-    Используется в песочнице для проверки создания профиля.
-    """
-    name = fields.get("first_name") or fields.get("id")
-    return call_api(
-        "POST",
-        _records_url(TABLE_USERS),
-        body={"fields": fields},
-        label=f"POST create user ({name})",
+    fetched = db.get_user(TEST_USER_ID)
+    _ok(
+        "GET user by id",
+        fetched is not None and fetched["first_name"] == "ТестОпрос",
+        json.dumps(fetched, ensure_ascii=False) if fetched else "",
     )
 
+    patched = db.update_user(
+        TEST_USER_ID,
+        {
+            "first_name": "ТестПатч",
+            "daily_calories": 2300,
+            "day_change_hour": 5,
+            "goal": "maintain",
+            "last_active_at": now + 10,
+        },
+    )
+    _ok(
+        "PATCH user fields",
+        patched.get("first_name") == "ТестПатч"
+        and patched.get("daily_calories") == 2300
+        and patched.get("day_change_hour") == 5
+        and patched.get("goal") == "maintain",
+        json.dumps(patched, ensure_ascii=False),
+    )
 
-# Пример шаблона для следующих запросов (раскомментируй и допиши):
-#
-# def get_user_by_id(user_id: int):
-#     """GET одной записи users по id (Telegram ID)."""
-#     return call_api("GET", _records_url(TABLE_USERS, user_id), label=f"GET user {user_id}")
+    upserted = db.upsert_profile(
+        TEST_USER_ID,
+        first_name="ТестUpsert",
+        gender="female",
+        age=30,
+        height=165.0,
+        weight=60.0,
+        activity_level=1.55,
+        goal="muscle_gain",
+        timezone="Asia/Yekaterinburg",
+        daily_calories=2500,
+    )
+    _ok(
+        "upsert_profile (existing → PATCH)",
+        upserted.get("first_name") == "ТестUpsert"
+        and upserted.get("goal") == "muscle_gain"
+        and upserted.get("timezone") == "Asia/Yekaterinburg",
+        json.dumps(upserted, ensure_ascii=False),
+    )
+
+    db.delete_user(TEST_USER_ID)
+    after = db.get_user(TEST_USER_ID)
+    _ok("DELETE user → gone", after is None)
+    print("\n=== users CRUD: all passed ===\n")
+
+
+# ---------------------------------------------------------------------------
+# food_logs
+# ---------------------------------------------------------------------------
+
+
+def test_food_logs_crud() -> None:
+    """Создать user → INSERT food_log → list → DELETE → list."""
+    print("\n=== test_food_logs_crud ===\n")
+
+    try:
+        db.delete_user(TEST_USER_ID)
+    except db.NocoDBError:
+        pass
+
+    now = int(time.time())
+    db.create_user(
+        {
+            "id": TEST_USER_ID,
+            "first_name": "FoodTest",
+            "gender": "male",
+            "age": 25,
+            "height": 180.0,
+            "weight": 80.0,
+            "activity_level": 1.2,
+            "goal": "maintain",
+            "daily_calories": 2000,
+            "timezone": "Europe/Moscow",
+            "day_change_hour": 4,
+            "created_at": now,
+            "last_active_at": now,
+        }
+    )
+
+    logged_date = "2026-07-27"
+    inserted = db.insert_food_log(
+        TEST_USER_ID,
+        title="Овсянка тест",
+        calories=420,
+        proteins=14.0,
+        fats=9.0,
+        carbs=68.0,
+        portion_g=300.0,
+        logged_date=logged_date,
+        details_json={"emoji": "🍳", "dish": "Овсянка тест", "status": "recognized"},
+    )
+    _ok(
+        "POST food_log",
+        inserted.get("title") == "Овсянка тест"
+        and inserted.get("emoji") == "🍳"
+        and inserted.get("logged_date") == logged_date,
+        json.dumps(inserted, ensure_ascii=False),
+    )
+    log_id = int(inserted["id"])
+
+    day_rows = db.get_food_logs_for_date(TEST_USER_ID, logged_date)
+    _ok(
+        "GET food_logs for date",
+        any(r["id"] == log_id for r in day_rows),
+        f"count={len(day_rows)}",
+    )
+
+    range_rows = db.get_food_logs_range(TEST_USER_ID, "2026-07-01", "2026-07-31")
+    _ok(
+        "GET food_logs range",
+        any(r["id"] == log_id for r in range_rows),
+        f"count={len(range_rows)}",
+    )
+
+    deleted = db.delete_food_log(TEST_USER_ID, log_id)
+    _ok("DELETE food_log", deleted is True)
+
+    after = db.get_food_logs_for_date(TEST_USER_ID, logged_date)
+    _ok("food_log gone after delete", all(r["id"] != log_id for r in after))
+
+    db.delete_user(TEST_USER_ID)
+    print("\n=== food_logs CRUD: all passed ===\n")
+
+
+# ---------------------------------------------------------------------------
+# reminders
+# ---------------------------------------------------------------------------
+
+
+def test_reminders_crud() -> None:
+    """Создать user → INSERT reminder → toggle → snooze → DELETE."""
+    print("\n=== test_reminders_crud ===\n")
+
+    try:
+        db.delete_user(TEST_USER_ID)
+    except db.NocoDBError:
+        pass
+
+    now = int(time.time())
+    db.create_user(
+        {
+            "id": TEST_USER_ID,
+            "first_name": "RemTest",
+            "gender": "female",
+            "age": 30,
+            "height": 165.0,
+            "weight": 60.0,
+            "activity_level": 1.375,
+            "goal": "weight_loss",
+            "daily_calories": 1800,
+            "timezone": "Europe/Moscow",
+            "day_change_hour": 4,
+            "created_at": now,
+            "last_active_at": now,
+        }
+    )
+
+    rem = db.add_reminder(
+        TEST_USER_ID,
+        title="Выпить Омега-3",
+        time_start="07:00",
+        time_end="11:00",
+        min_calories=250,
+    )
+    _ok(
+        "POST reminder",
+        rem.get("title") == "Выпить Омега-3" and rem.get("is_active") is True,
+        json.dumps(rem, ensure_ascii=False),
+    )
+    rem_id = int(rem["id"])
+
+    listed = db.get_reminders(TEST_USER_ID)
+    _ok("GET reminders list", any(r["id"] == rem_id for r in listed), f"count={len(listed)}")
+
+    one = db.get_reminder(TEST_USER_ID, rem_id)
+    _ok("GET reminder by id", one is not None and one["id"] == rem_id)
+
+    toggled = db.set_reminder_active(TEST_USER_ID, rem_id, False)
+    one2 = db.get_reminder(TEST_USER_ID, rem_id)
+    _ok(
+        "PATCH is_active=False",
+        toggled and one2 is not None and one2["is_active"] is False,
+    )
+
+    db.mark_reminder_triggered(rem_id)
+    one3 = db.get_reminder(TEST_USER_ID, rem_id)
+    _ok(
+        "PATCH is_triggered_today=True",
+        one3 is not None and one3["is_triggered_today"] is True,
+    )
+
+    snoozed = db.snooze_reminder(TEST_USER_ID, rem_id)
+    one4 = db.get_reminder(TEST_USER_ID, rem_id)
+    _ok(
+        "snooze → is_triggered_today=False",
+        snoozed and one4 is not None and one4["is_triggered_today"] is False,
+    )
+
+    deleted = db.delete_reminder(TEST_USER_ID, rem_id)
+    after = db.get_reminders(TEST_USER_ID)
+    _ok("DELETE reminder", deleted and all(r["id"] != rem_id for r in after))
+
+    db.delete_user(TEST_USER_ID)
+    print("\n=== reminders CRUD: all passed ===\n")
 
 
 if __name__ == "__main__":
-    # Какие запросы прогнать сейчас — правь этот список:
-    # get_all_users()
-    create_user(
-        {
-            "id": 123456790,
-            "first_name": "Тестовый-2",
-            "gender": "М",
-            "age": 99,
-            "height": 200,
-            "weight": 100,
-            "activity_level": 2,
-            "goal": "Похудение",
-            "daily_calories": 2000,
-            "timezone": "UTC",
-            "day_change_hour": 4,
-            "created_at": 123456790,
-        }
-    )
+    # Полный прогон всех таблиц:
+    test_users_crud()
+    test_food_logs_crud()
+    test_reminders_crud()

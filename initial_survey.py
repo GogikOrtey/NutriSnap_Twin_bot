@@ -314,7 +314,7 @@ def parse_positive_int(text: str) -> int | None:
     return value
 
 
-# Собирает dict профиля из FSM-данных для stub_set_profile / on_complete.
+# Собирает dict профиля из FSM-данных для set_profile / on_complete.
 # Используется при завершении опроса (после подтверждения ккал).
 def profile_from_state_data(data: dict[str, Any]) -> dict[str, Any]:
     return {

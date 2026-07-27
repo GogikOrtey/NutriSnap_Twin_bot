@@ -6,17 +6,17 @@ main.py — точка входа Telegram-бота NutriSnap (@nutrisnap_ultra_
 Запуск бота (long polling), инфраструктура (Bot, Dispatcher, MemoryStorage),
 главное меню (дневник, распознать, настройки, напоминания, выгрузка) и /start.
 Распознавание еды — в food_recognition.py (отдельный Router).
-Первичный опрос — в initial_survey.py (флаг INITIAL_SURVEY_ENABLED).
+Первичный опрос — в initial_survey.py; /start смотрит NocoDB users.
 Обратная связь (баг / идея) — SMTP-письмо на FEEDBACK_TO_EMAIL.
 FAQ в настройках — обзор возможностей и ответы по темам (распознавание, дневник, …).
 
 Как устроен файл
 ----------------
 1. Импорты, .env, константы кнопок, MenuFlow.
-2. Stub-хранилище и 🔰-хелперы (заглушки вместо SQL: users / food_logs / reminders).
+2. Хранилище NocoDB (db_nocodb): users / food_logs / reminders.
 3. SMTP обратной связи (send_feedback_email) + форматтеры / Reply-клавиатуры.
 4. UI-хелперы: Reply → новое сообщение; Inline дневника → edit; чистка «Выберите действие:».
-5. Router меню + хендлеры; /start → опрос (если флаг) или главное меню; on_food_saved → reminders.
+5. Router меню + хендлеры; /start → опрос или меню по БД; on_food_saved → food_logs + reminders.
 6. main() — старт polling.
 """
 
@@ -52,6 +52,7 @@ from aiogram.types import (
 )
 from dotenv import load_dotenv
 
+import db_nocodb as db
 from food_recognition import setup_food_recognition
 from initial_survey import setup_initial_survey, start_initial_survey
 
@@ -68,9 +69,9 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 SMTP_USER = os.getenv("SMTP_USER", "gog.ortey@yandex.ru")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
-# Если True — /start всегда кидает на первичный опрос (для разработки UI опроса).
-# Позже: выключить и проверять в БД, прошёл ли пользователь опрос при первом запуске.
-INITIAL_SURVEY_ENABLED = True
+# Если True — /start всегда кидает на первичный опрос (для отладки UI).
+# Если False — маршрутизация по наличию записи в users (NocoDB).
+INITIAL_SURVEY_ENABLED = False
 
 # Кнопка возврата в корень — есть в основных разделах.
 BTN_MAIN_MENU = "🏠 Главное меню"
@@ -402,163 +403,90 @@ class MenuFlow(StatesGroup):
     reminders_delete_confirm = State()
 #endregion
 
-#region Stub-хранилище (вместо БД)
-# In-memory профили и записи на время сессии процесса — пока нет SQL.
-_stub_profiles: dict[int, dict[str, Any]] = {}
-_stub_food_logs: dict[int, list[dict[str, Any]]] = {}
-_stub_reminders: dict[int, list[dict[str, Any]]] = {}
-_stub_reminder_id_seq = 0
+#region Хранилище NocoDB (users / food_logs / reminders)
+# Логическая дата последнего сброса is_triggered_today (process-local, до cron).
+_reminder_day_reset: dict[int, str] = {}
 
 
-# 🔰 Профиль пользователя (users). Создаёт тестовый профиль при первом обращении.
+# Профиль пользователя из NocoDB (users). Без автосоздания «тестового» профиля.
 # Используется экранами меню, выгрузкой и расчётом логической даты.
-def stub_get_user(user_id: int) -> dict[str, Any]:
-    # 🔰 SELECT * FROM users WHERE id = ?
-    if user_id not in _stub_profiles:
-        _stub_profiles[user_id] = {
-            "id": user_id,
-            "first_name": "Тест",
-            "gender": "male",
-            "age": 28,
-            "height": 178.0,
-            "weight": 75.0,
-            "activity_level": 1.375,
-            "goal": "weight_loss",
-            "daily_calories": 2200,
-            "timezone": "Europe/Moscow",
-            "day_change_hour": 4,
-            "last_active_at": int(time.time()),
-        }
-    return _stub_profiles[user_id]
+def get_user(user_id: int) -> dict[str, Any]:
+    row = db.get_user(user_id)
+    if row is None:
+        raise LookupError(f"user {user_id} not found in NocoDB")
+    return row
 
 
-# 🔰 Обновляет users.last_active_at (для заморозки напоминаний через 3 дня).
+# Обновляет users.last_active_at (для заморозки напоминаний через 3 дня).
 # Используется при активности в боте и перед проверкой триггеров.
-def stub_touch_user_activity(user_id: int) -> None:
-    # 🔰 UPDATE users SET last_active_at = ? WHERE id = ?
-    user = stub_get_user(user_id)
-    user["last_active_at"] = int(time.time())
+def touch_user_activity(user_id: int) -> None:
+    db.touch_user_activity(user_id)
 
 
-# 🔰 Инициализация тестовых food_logs на «сегодня» (если ещё нет записей).
-# Используется stub_get_food_logs_for_date при первом запросе дневника.
-def _ensure_stub_food_logs(user_id: int) -> None:
-    # 🔰 SELECT COUNT(*) FROM food_logs WHERE user_id = ?
-    if user_id in _stub_food_logs:
-        return
-    user = stub_get_user(user_id)
-    today = logical_today(user)
-    tz = ZoneInfo(user["timezone"])
-    base = datetime.now(tz).replace(second=0, microsecond=0)
-    _stub_food_logs[user_id] = [
-        {
-            "id": 1,
-            "user_id": user_id,
-            "emoji": "🍳",
-            "title": "Овсянка с бананом",
-            "calories": 420,
-            "proteins": 14.0,
-            "fats": 9.0,
-            "carbs": 68.0,
-            "portion_g": 300.0,
-            "logged_date": today,
-            "created_at": int(base.replace(hour=8, minute=30).timestamp()),
-        },
-        {
-            "id": 2,
-            "user_id": user_id,
-            "emoji": "🍕",
-            "title": "Куриная грудка с рисом",
-            "calories": 650,
-            "proteins": 48.0,
-            "fats": 12.0,
-            "carbs": 70.0,
-            "portion_g": 400.0,
-            "logged_date": today,
-            "created_at": int(base.replace(hour=13, minute=15).timestamp()),
-        },
-        {
-            "id": 3,
-            "user_id": user_id,
-            "emoji": "☕️",
-            "title": "Греческий йогурт",
-            "calories": 180,
-            "proteins": 15.0,
-            "fats": 5.0,
-            "carbs": 12.0,
-            "portion_g": 150.0,
-            "logged_date": today,
-            "created_at": int(base.replace(hour=16, minute=40).timestamp()),
-        },
-    ]
-
-
-# 🔰 Записи дневника за логическую дату YYYY-MM-DD.
+# Записи дневника за логическую дату YYYY-MM-DD.
 # Используется главным меню, дневником, удалением и выгрузкой.
-def stub_get_food_logs_for_date(user_id: int, logged_date: str) -> list[dict[str, Any]]:
-    # 🔰 SELECT * FROM food_logs WHERE user_id = ? AND logged_date = ?
-    #    ORDER BY created_at ASC  (индекс idx_food_logs_user_date)
-    _ensure_stub_food_logs(user_id)
-    rows = [r for r in _stub_food_logs[user_id] if r["logged_date"] == logged_date]
-    return sorted(rows, key=lambda r: r["created_at"])
+def get_food_logs_for_date(user_id: int, logged_date: str) -> list[dict[str, Any]]:
+    return db.get_food_logs_for_date(user_id, logged_date)
 
 
-# 🔰 Записи за диапазон дат [date_from, date_to] включительно.
+# Записи за диапазон дат [date_from, date_to] включительно.
 # Используется выгрузкой журнала за неделю/месяц.
-def stub_get_food_logs_range(
+def get_food_logs_range(
     user_id: int, date_from: str, date_to: str
 ) -> list[dict[str, Any]]:
-    # 🔰 SELECT * FROM food_logs
-    #    WHERE user_id = ? AND logged_date BETWEEN ? AND ?
-    #    ORDER BY logged_date, created_at
-    _ensure_stub_food_logs(user_id)
-    rows = [
-        r
-        for r in _stub_food_logs[user_id]
-        if date_from <= r["logged_date"] <= date_to
-    ]
-    return sorted(rows, key=lambda r: (r["logged_date"], r["created_at"]))
+    return db.get_food_logs_range(user_id, date_from, date_to)
 
 
-# 🔰 Удаление записи food_logs по id (только свои).
+# Удаление записи food_logs по id (только свои).
 # Используется флоу «Удалить блюдо» в дневнике.
-def stub_delete_food_log(user_id: int, log_id: int) -> bool:
-    # 🔰 DELETE FROM food_logs WHERE id = ? AND user_id = ?
-    _ensure_stub_food_logs(user_id)
-    before = len(_stub_food_logs[user_id])
-    _stub_food_logs[user_id] = [
-        r for r in _stub_food_logs[user_id] if not (r["id"] == log_id and r["user_id"] == user_id)
-    ]
-    return len(_stub_food_logs[user_id]) < before
+def delete_food_log(user_id: int, log_id: int) -> bool:
+    return db.delete_food_log(user_id, log_id)
 
 
-# 🔰 Обновление day_change_hour в users.
+# INSERT food_logs после ✅ распознавания (emoji → details_json).
+# Используется _on_food_saved.
+def insert_food_log_from_result(
+    user_id: int, result: Any, logged_date: str
+) -> dict[str, Any]:
+    details: dict[str, Any]
+    if hasattr(result, "model_dump"):
+        details = result.model_dump()
+    else:
+        details = dict(result) if isinstance(result, dict) else {}
+    return db.insert_food_log(
+        user_id,
+        title=str(getattr(result, "dish", None) or details.get("dish") or "Блюдо"),
+        calories=int(getattr(result, "calories", 0) or 0),
+        proteins=float(getattr(result, "proteins", 0) or 0),
+        fats=float(getattr(result, "fats", 0) or 0),
+        carbs=float(getattr(result, "carbs", 0) or 0),
+        portion_g=float(getattr(result, "portion_g", 0) or 0),
+        logged_date=logged_date,
+        details_json=details,
+    )
+
+
+# Обновление day_change_hour в users.
 # Используется настройкой «Время смены суток».
-def stub_set_day_change_hour(user_id: int, hour: int) -> None:
-    # 🔰 UPDATE users SET day_change_hour = ? WHERE id = ?
-    user = stub_get_user(user_id)
-    user["day_change_hour"] = hour
+def set_day_change_hour(user_id: int, hour: int) -> None:
+    db.set_day_change_hour(user_id, hour)
 
 
-# 🔰 Обновление goal в users.
+# Обновление goal в users.
 # Используется настройкой «Тип отслеживания».
-def stub_set_goal(user_id: int, goal: str) -> None:
-    # 🔰 UPDATE users SET goal = ? WHERE id = ?
-    user = stub_get_user(user_id)
-    user["goal"] = goal
+def set_goal(user_id: int, goal: str) -> None:
+    db.set_goal(user_id, goal)
 
 
-# 🔰 Обновление daily_calories в users.
+# Обновление daily_calories в users.
 # Используется настройкой «Целевые ккал».
-def stub_set_daily_calories(user_id: int, calories: int) -> None:
-    # 🔰 UPDATE users SET daily_calories = ? WHERE id = ?
-    user = stub_get_user(user_id)
-    user["daily_calories"] = calories
+def set_daily_calories(user_id: int, calories: int) -> None:
+    db.set_daily_calories(user_id, calories)
 
 
-# 🔰 Запись полей профиля из первичного опроса (включая timezone и daily_calories).
+# Запись полей профиля из первичного опроса (включая timezone и daily_calories).
 # Используется on_survey_complete после прохождения initial_survey.
-def stub_set_profile(
+def set_profile(
     user_id: int,
     *,
     first_name: str,
@@ -571,19 +499,18 @@ def stub_set_profile(
     timezone: str,
     daily_calories: int,
 ) -> None:
-    # 🔰 UPDATE users SET first_name=?, gender=?, age=?, height=?, weight=?,
-    #    activity_level=?, goal=?, timezone=?, daily_calories=? WHERE id=?
-    user = stub_get_user(user_id)
-    user["first_name"] = first_name
-    user["gender"] = gender
-    user["age"] = age
-    user["height"] = height
-    user["weight"] = weight
-    user["activity_level"] = activity_level
-    user["goal"] = goal
-    user["timezone"] = timezone
-    user["daily_calories"] = daily_calories
-    user["last_active_at"] = int(time.time())
+    db.upsert_profile(
+        user_id,
+        first_name=first_name,
+        gender=gender,
+        age=age,
+        height=height,
+        weight=weight,
+        activity_level=activity_level,
+        goal=goal,
+        timezone=timezone,
+        daily_calories=daily_calories,
+    )
 
 
 # Подписи типов обратной связи для писем и UI.
@@ -673,126 +600,84 @@ async def download_photo_bytes(bot: Bot, file_id: str) -> bytes:
     return buffer.getvalue()
 
 
-# 🔰 Список напоминаний пользователя (reminders), от новых к старым по id.
+# Список напоминаний пользователя (reminders), от новых к старым по id.
 # Используется экранами «Напоминания» / «Мои напоминания».
-def stub_get_reminders(user_id: int) -> list[dict[str, Any]]:
-    # 🔰 SELECT * FROM reminders WHERE user_id = ? ORDER BY id
-    return list(_stub_reminders.get(user_id, []))
+def get_reminders(user_id: int) -> list[dict[str, Any]]:
+    return db.get_reminders(user_id)
 
 
-# 🔰 Одно напоминание по id (только своё).
+# Одно напоминание по id (только своё).
 # Используется карточкой напоминания, toggle/delete и snooze.
-def stub_get_reminder(user_id: int, reminder_id: int) -> dict[str, Any] | None:
-    # 🔰 SELECT * FROM reminders WHERE id = ? AND user_id = ?
-    for row in _stub_reminders.get(user_id, []):
-        if row["id"] == reminder_id:
-            return row
-    return None
+def get_reminder(user_id: int, reminder_id: int) -> dict[str, Any] | None:
+    return db.get_reminder(user_id, reminder_id)
 
 
-# 🔰 Создание напоминания (reminders).
+# Создание напоминания (reminders).
 # Используется флоу «➕ Добавить напоминание».
-def stub_add_reminder(
+def add_reminder(
     user_id: int,
     title: str,
     time_start: str,
     time_end: str,
     min_calories: int,
 ) -> dict[str, Any]:
-    # 🔰 INSERT INTO reminders (user_id, title, time_start, time_end, min_calories)
-    #    VALUES (?, ?, ?, ?, ?) RETURNING *
-    global _stub_reminder_id_seq
-    _stub_reminder_id_seq += 1
-    row = {
-        "id": _stub_reminder_id_seq,
-        "user_id": user_id,
-        "title": title,
-        "time_start": time_start,
-        "time_end": time_end,
-        "min_calories": int(min_calories),
-        "is_triggered_today": False,
-        "is_active": True,
-        "_trigger_date": logical_today(stub_get_user(user_id)),
-    }
-    _stub_reminders.setdefault(user_id, []).append(row)
-    return row
+    return db.add_reminder(user_id, title, time_start, time_end, min_calories)
 
 
-# 🔰 Вкл/выкл напоминания (reminders.is_active).
+# Вкл/выкл напоминания (reminders.is_active).
 # Используется карточкой «Мои напоминания».
-def stub_set_reminder_active(user_id: int, reminder_id: int, is_active: bool) -> bool:
-    # 🔰 UPDATE reminders SET is_active = ? WHERE id = ? AND user_id = ?
-    row = stub_get_reminder(user_id, reminder_id)
-    if row is None:
-        return False
-    row["is_active"] = bool(is_active)
-    return True
+def set_reminder_active(user_id: int, reminder_id: int, is_active: bool) -> bool:
+    return db.set_reminder_active(user_id, reminder_id, is_active)
 
 
-# 🔰 Удаление напоминания.
+# Удаление напоминания.
 # Используется карточкой «Мои напоминания».
-def stub_delete_reminder(user_id: int, reminder_id: int) -> bool:
-    # 🔰 DELETE FROM reminders WHERE id = ? AND user_id = ?
-    rows = _stub_reminders.get(user_id, [])
-    before = len(rows)
-    _stub_reminders[user_id] = [r for r in rows if r["id"] != reminder_id]
-    return len(_stub_reminders.get(user_id, [])) < before
+def delete_reminder(user_id: int, reminder_id: int) -> bool:
+    return db.delete_reminder(user_id, reminder_id)
 
 
-# 🔰 Сброс is_triggered_today при смене логических суток (заглушка вместо cron).
+# Сброс is_triggered_today при смене логических суток (process-local дата).
 # Используется перед проверкой триггеров после сохранения еды.
-def _stub_reset_reminder_triggers_if_new_day(user_id: int) -> None:
-    # 🔰 UPDATE reminders SET is_triggered_today = FALSE
-    #    WHERE user_id = ? AND <смена логических суток>
-    user = stub_get_user(user_id)
+def _reset_reminder_triggers_if_new_day(user_id: int) -> None:
+    user = get_user(user_id)
     today = logical_today(user)
-    for row in _stub_reminders.get(user_id, []):
-        if row.get("_trigger_date") != today:
-            row["is_triggered_today"] = False
-            row["_trigger_date"] = today
+    if _reminder_day_reset.get(user_id) == today:
+        return
+    for row in get_reminders(user_id):
+        if row.get("is_triggered_today"):
+            db.update_reminder(int(row["id"]), {"is_triggered_today": False})
+    _reminder_day_reset[user_id] = today
 
 
-# 🔰 Пользователь «заморожен» по last_active_at (нет активности > N дней).
+# Пользователь «заморожен» по last_active_at (нет активности > N дней).
 # Используется proactive/missed-уведомлениями; food-триггер обычно идёт при визите.
-def stub_reminders_frozen(user_id: int) -> bool:
-    user = stub_get_user(user_id)
+def reminders_frozen(user_id: int) -> bool:
+    user = get_user(user_id)
     last = int(user.get("last_active_at") or 0)
     if last <= 0:
         return False
     return (time.time() - last) > REMINDER_FREEZE_AFTER_DAYS * 86400
 
 
-# 🔰 Перенос сработавшего напоминания на следующую еду (сброс is_triggered_today).
+# Перенос сработавшего напоминания на следующую еду (сброс is_triggered_today).
 # Используется inline «⏰ На следующую еду» под уведомлением.
-def stub_snooze_reminder(user_id: int, reminder_id: int) -> bool:
-    # 🔰 UPDATE reminders SET is_triggered_today = FALSE WHERE id = ? AND user_id = ?
-    row = stub_get_reminder(user_id, reminder_id)
-    if row is None:
-        return False
-    row["is_triggered_today"] = False
-    row["_trigger_date"] = logical_today(stub_get_user(user_id))
-    return True
+def snooze_reminder(user_id: int, reminder_id: int) -> bool:
+    return db.snooze_reminder(user_id, reminder_id)
 
 
-# 🔰 После INSERT в food_logs: активные reminders в текущем окне времени,
+# После INSERT в food_logs: активные reminders в текущем окне времени,
 # calories >= min_calories, ещё не срабатывали сегодня → пометить и вернуть список.
 # Используется колбэком on_food_saved из food_recognition.
-def stub_trigger_reminders_for_food(
+def trigger_reminders_for_food(
     user_id: int, calories: int
 ) -> list[dict[str, Any]]:
-    # 🔰 SELECT * FROM reminders
-    #    WHERE user_id = ? AND is_active AND NOT is_triggered_today
-    #      AND time_start <= now_local <= time_end
-    #      AND ? >= min_calories;
-    # 🔰 затем UPDATE is_triggered_today = TRUE для найденных.
-    # Заморозка (3 дня) на food-триггер не влияет — пользователь уже в боте.
-    stub_touch_user_activity(user_id)
-    _stub_reset_reminder_triggers_if_new_day(user_id)
-    user = stub_get_user(user_id)
+    touch_user_activity(user_id)
+    _reset_reminder_triggers_if_new_day(user_id)
+    user = get_user(user_id)
     now_hm = datetime.now(ZoneInfo(user["timezone"])).strftime("%H:%M")
     kcal = int(calories or 0)
     triggered: list[dict[str, Any]] = []
-    for row in _stub_reminders.get(user_id, []):
+    for row in get_reminders(user_id):
         if not row.get("is_active"):
             continue
         if row.get("is_triggered_today"):
@@ -801,23 +686,24 @@ def stub_trigger_reminders_for_food(
             continue
         if kcal < int(row.get("min_calories") or 0):
             continue
+        db.mark_reminder_triggered(int(row["id"]))
+        row = dict(row)
         row["is_triggered_today"] = True
-        row["_trigger_date"] = logical_today(user)
-        triggered.append(dict(row))
+        triggered.append(row)
         print(
-            f"🔰 reminder triggered user_id={user_id} id={row['id']} "
+            f"reminder triggered user_id={user_id} id={row['id']} "
             f"title={row['title']!r} kcal={kcal}",
             flush=True,
         )
     return triggered
 
 
-# 🔰 Заглушка проверки «окно закончилось, еду не залогировали» (будущий cron/job).
+# 🎈 Заглушка проверки «окно закончилось, еду не залогировали» (будущий cron/job).
 # Сейчас не вызывается — планировщик подключим отдельно.
-def stub_check_missed_reminders(user_id: int) -> list[dict[str, Any]]:
-    # 🔰 SELECT active reminders WHERE now > time_end AND NOT is_triggered_today
+def check_missed_reminders(user_id: int) -> list[dict[str, Any]]:
+    # 🎈 SELECT active reminders WHERE now > time_end AND NOT is_triggered_today
     #    AND user not frozen; затем уведомить «пропущено».
-    if stub_reminders_frozen(user_id):
+    if reminders_frozen(user_id):
         return []
     _ = user_id
     return []
@@ -1493,10 +1379,10 @@ async def show_main_menu(
     await state.clear()
     await state.update_data(diary_offset=0, export_return="main", menu_screen="main")
     uid = user_id if user_id is not None else (message.from_user.id if message.from_user else 0)
-    user = stub_get_user(uid)
+    user = get_user(uid)
     user_id = uid
     today = logical_today(user)
-    logs = stub_get_food_logs_for_date(user_id, today)
+    logs = get_food_logs_for_date(user_id, today)
     text = format_day_card(
         user,
         today,
@@ -1554,10 +1440,10 @@ async def show_diary(
         menu_screen="diary",
     )
     uid = user_id if user_id is not None else (message.from_user.id if message.from_user else 0)
-    user = stub_get_user(uid)
+    user = get_user(uid)
     user_id = uid
     logged_date = logical_date_with_offset(user, offset)
-    logs = stub_get_food_logs_for_date(user_id, logged_date)
+    logs = get_food_logs_for_date(user_id, logged_date)
     is_today = offset == 0
     title = f"📒 <b>Дневник питания</b> — {logged_date}"
     text = format_day_card(
@@ -1609,8 +1495,8 @@ async def show_settings(message: Message, state: FSMContext) -> None:
     await state.set_state(None)
     await state.update_data(export_return="settings", menu_screen="settings")
     user_id = message.from_user.id if message.from_user else 0
-    user = stub_get_user(user_id)
-    rem_count = len(stub_get_reminders(user_id))
+    user = get_user(user_id)
+    rem_count = len(get_reminders(user_id))
     text = (
         "⚙️ Настройки\n"
         "\n"
@@ -1742,7 +1628,7 @@ async def notify_reminders_after_food(
     bot: Bot,
     chat_id: int,
 ) -> None:
-    triggered = stub_trigger_reminders_for_food(user_id, calories)
+    triggered = trigger_reminders_for_food(user_id, calories)
     for row in triggered:
         await bot.send_message(
             chat_id,
@@ -1757,7 +1643,7 @@ async def show_profile(message: Message, state: FSMContext) -> None:
     await state.set_state(None)
     await state.update_data(menu_screen="profile")
     user_id = message.from_user.id if message.from_user else 0
-    user = stub_get_user(user_id)
+    user = get_user(user_id)
     text = (
         "👤 Данные профиля\n"
         "\n"
@@ -1815,7 +1701,7 @@ async def send_export_file(
     period_title: str,
     filename: str,
 ) -> None:
-    # 🔰 Данные уже получены stub_get_*; здесь только сборка файла.
+    # Данные уже получены get_*; здесь только сборка файла.
     content = build_export_txt(user, logs, period_title)
     document = BufferedInputFile(content.encode("utf-8"), filename=filename)
     await message.answer_document(
@@ -1829,7 +1715,7 @@ menu_router = Router(name="main_menu")
 
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
-# Колбэк после подтверждения еды: проверка reminders и рассылка уведомлений.
+# Колбэк после подтверждения еды: INSERT food_logs → reminders.
 # Передаётся в food_recognition.setup_food_recognition(on_food_saved=...).
 async def _on_food_saved(
     user_id: int,
@@ -1837,11 +1723,17 @@ async def _on_food_saved(
     bot: Bot,
     chat_id: int,
 ) -> None:
+    try:
+        user = get_user(user_id)
+        logged_date = logical_today(user)
+        insert_food_log_from_result(user_id, result, logged_date)
+    except Exception as e:
+        print(f"food_logs insert failed user_id={user_id}: {e}", flush=True)
     calories = int(getattr(result, "calories", 0) or 0)
     await notify_reminders_after_food(user_id, calories, bot, chat_id)
 
 
-# Колбэк после первичного опроса: stub-профиль → «всё настроено» + памятка «Распознать».
+# Колбэк после первичного опроса: upsert профиля в NocoDB → «всё настроено».
 # Передаётся в initial_survey.setup_initial_survey(on_complete=...).
 async def _on_survey_complete(
     message: Message,
@@ -1853,7 +1745,7 @@ async def _on_survey_complete(
         profile.get("user_id")
         or (message.from_user.id if message.from_user else 0)
     )
-    stub_set_profile(
+    set_profile(
         user_id,
         first_name=str(profile["first_name"]),
         gender=str(profile["gender"]),
@@ -1888,12 +1780,17 @@ dp.include_router(
 #endregion
 
 #region Хендлеры: корень и навигация
-# /start — при INITIAL_SURVEY_ENABLED → первичный опрос, иначе главное меню.
+# /start — нет профиля в NocoDB → опрос; иначе главное меню.
 # Регистрируется на dp (не на menu_router), чтобы всегда быть доступным.
-# Позже: вместо флага — проверка в БД (прошёл ли пользователь опрос).
+# INITIAL_SURVEY_ENABLED=True принудительно всегда открывает опрос (отладка UI).
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.id if message.from_user else 0
     if INITIAL_SURVEY_ENABLED:
+        await start_initial_survey(message, state)
+        return
+    existing = db.get_user(user_id)
+    if existing is None:
         await start_initial_survey(message, state)
         return
     await state.clear()
@@ -1983,7 +1880,7 @@ async def on_back(message: Message, state: FSMContext) -> None:
         # Назад с подтверждения удаления → снова карточка напоминания.
         rem_id = int(data.get("rem_edit_id") or 0)
         user_id = message.from_user.id if message.from_user else 0
-        row = stub_get_reminder(user_id, rem_id)
+        row = get_reminder(user_id, rem_id)
         if row is None:
             await show_reminders(message, state)
             return
@@ -2092,11 +1989,11 @@ async def on_add_dish(message: Message, state: FSMContext) -> None:
 @menu_router.message(F.text == BTN_EDIT_DISH)
 async def on_edit_dish(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    user = stub_get_user(user_id)
+    user = get_user(user_id)
     data = await state.get_data()
     offset = int(data.get("diary_offset", 0))
     logged_date = logical_date_with_offset(user, offset)
-    logs = stub_get_food_logs_for_date(user_id, logged_date)
+    logs = get_food_logs_for_date(user_id, logged_date)
     await state.update_data(
         menu_screen="diary",
         pick_logs=[r["id"] for r in logs],
@@ -2119,7 +2016,7 @@ async def on_edit_dish(message: Message, state: FSMContext) -> None:
     )
 
 
-# Выбор номера для изменения → заглушка (без формы полей).
+# 🎈 Выбор номера для изменения → заглушка (без формы полей / UPDATE).
 @menu_router.message(MenuFlow.diary_pick_edit, F.text, ~F.text.in_(MENU_BUTTON_TEXTS))
 async def on_edit_dish_pick(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
@@ -2134,7 +2031,7 @@ async def on_edit_dish_pick(message: Message, state: FSMContext) -> None:
         return
     log_id = pick_ids[idx - 1]
     await state.set_state(None)
-    # 🔰 UPDATE food_logs ... — пока не подключено
+    # 🎈 UPDATE food_logs ... — форма редактирования появится позже
     await replace_ui(
         message,
         state,
@@ -2148,11 +2045,11 @@ async def on_edit_dish_pick(message: Message, state: FSMContext) -> None:
 @menu_router.message(F.text == BTN_DELETE_DISH)
 async def on_delete_dish(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    user = stub_get_user(user_id)
+    user = get_user(user_id)
     data = await state.get_data()
     offset = int(data.get("diary_offset", 0))
     logged_date = logical_date_with_offset(user, offset)
-    logs = stub_get_food_logs_for_date(user_id, logged_date)
+    logs = get_food_logs_for_date(user_id, logged_date)
     await state.update_data(
         menu_screen="diary",
         pick_logs=[r["id"] for r in logs],
@@ -2175,7 +2072,7 @@ async def on_delete_dish(message: Message, state: FSMContext) -> None:
     )
 
 
-# Выбор номера для удаления → 🔰 stub delete + обновление дневника.
+# Выбор номера для удаления → delete food_logs + обновление дневника.
 @menu_router.message(MenuFlow.diary_pick_delete, F.text, ~F.text.in_(MENU_BUTTON_TEXTS))
 async def on_delete_dish_pick(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
@@ -2190,7 +2087,7 @@ async def on_delete_dish_pick(message: Message, state: FSMContext) -> None:
         return
     log_id = pick_ids[idx - 1]
     user_id = message.from_user.id if message.from_user else 0
-    stub_delete_food_log(user_id, log_id)
+    delete_food_log(user_id, log_id)
     await state.set_state(None)
     await show_diary(message, state)
 
@@ -2220,10 +2117,10 @@ async def on_dish_pick_page(message: Message, state: FSMContext) -> None:
     await state.update_data(pick_page=page)
 
     user_id = message.from_user.id if message.from_user else 0
-    user = stub_get_user(user_id)
+    user = get_user(user_id)
     offset = int(data.get("diary_offset", 0))
     logged_date = logical_date_with_offset(user, offset)
-    logs = stub_get_food_logs_for_date(user_id, logged_date)
+    logs = get_food_logs_for_date(user_id, logged_date)
     # Сохраняем порядок/состав pick_logs; для текста берём актуальные записи по id.
     id_to_log = {r["id"]: r for r in logs}
     ordered = [id_to_log[i] for i in pick_ids if i in id_to_log]
@@ -2250,9 +2147,9 @@ async def on_dish_pick_page(message: Message, state: FSMContext) -> None:
 async def on_export_today(message: Message, state: FSMContext) -> None:
     await state.update_data(menu_screen="export")
     user_id = message.from_user.id if message.from_user else 0
-    user = stub_get_user(user_id)
+    user = get_user(user_id)
     day = logical_today(user)
-    logs = stub_get_food_logs_for_date(user_id, day)
+    logs = get_food_logs_for_date(user_id, day)
     await send_export_file(
         message, user, logs, f"текущий день ({day})", f"diary_{day}.txt"
     )
@@ -2263,9 +2160,9 @@ async def on_export_today(message: Message, state: FSMContext) -> None:
 async def on_export_yesterday(message: Message, state: FSMContext) -> None:
     await state.update_data(menu_screen="export")
     user_id = message.from_user.id if message.from_user else 0
-    user = stub_get_user(user_id)
+    user = get_user(user_id)
     day = logical_date_with_offset(user, -1)
-    logs = stub_get_food_logs_for_date(user_id, day)
+    logs = get_food_logs_for_date(user_id, day)
     await send_export_file(
         message, user, logs, f"прошлый день ({day})", f"diary_{day}.txt"
     )
@@ -2276,10 +2173,10 @@ async def on_export_yesterday(message: Message, state: FSMContext) -> None:
 async def on_export_week(message: Message, state: FSMContext) -> None:
     await state.update_data(menu_screen="export")
     user_id = message.from_user.id if message.from_user else 0
-    user = stub_get_user(user_id)
+    user = get_user(user_id)
     date_to = logical_today(user)
     date_from = logical_date_with_offset(user, -6)
-    logs = stub_get_food_logs_range(user_id, date_from, date_to)
+    logs = get_food_logs_range(user_id, date_from, date_to)
     await send_export_file(
         message,
         user,
@@ -2311,7 +2208,7 @@ async def on_export_month(message: Message, state: FSMContext) -> None:
 async def on_export_month_pick(message: Message, state: FSMContext) -> None:
     text = message.text or ""
     user_id = message.from_user.id if message.from_user else 0
-    user = stub_get_user(user_id)
+    user = get_user(user_id)
     if text == BTN_MONTH_0_30:
         start_off, end_off = -29, 0
         title = "последние 30 дней"
@@ -2323,7 +2220,7 @@ async def on_export_month_pick(message: Message, state: FSMContext) -> None:
         title = "от 60 до 90 дней назад"
     date_from = logical_date_with_offset(user, start_off)
     date_to = logical_date_with_offset(user, end_off)
-    logs = stub_get_food_logs_range(user_id, date_from, date_to)
+    logs = get_food_logs_range(user_id, date_from, date_to)
     await state.set_state(None)
     await state.update_data(menu_screen="export")
     await send_export_file(
@@ -2365,7 +2262,7 @@ async def on_update_profile_ask(message: Message, state: FSMContext) -> None:
     )
 
 
-# Согласие на перезапуск опроса → заглушка (онбординг подключим позже).
+# 🎈 Согласие на перезапуск опроса → заглушка (онбординг подключим позже).
 @menu_router.message(F.text == BTN_CONFIRM_UPDATE_YES)
 async def on_update_profile_yes(message: Message, state: FSMContext) -> None:
     await state.set_state(None)
@@ -2375,7 +2272,7 @@ async def on_update_profile_yes(message: Message, state: FSMContext) -> None:
         state,
         "🔜 Перекидываем вас на первоначальный опрос…\n"
         "\n"
-        "Заглушка: сам опрос подключим позже. "
+        "🎈 Заглушка: сам опрос подключим позже. "
         "Сейчас вы остаётесь в разделе данных профиля",
         reply_markup=kb_profile(),
     )
@@ -2391,7 +2288,7 @@ async def on_update_profile_no(message: Message, state: FSMContext) -> None:
 @menu_router.message(F.text == BTN_SET_DAY_HOUR)
 async def on_set_day_hour(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    user = stub_get_user(user_id)
+    user = get_user(user_id)
     await state.set_state(MenuFlow.settings_day_hour)
     await state.update_data(menu_screen="settings")
     await replace_ui(
@@ -2410,7 +2307,7 @@ async def on_set_day_hour(message: Message, state: FSMContext) -> None:
     )
 
 
-# Сохранение day_change_hour (🔰).
+# Сохранение day_change_hour в NocoDB.
 @menu_router.message(MenuFlow.settings_day_hour, F.text, ~F.text.in_(MENU_BUTTON_TEXTS))
 async def on_set_day_hour_value(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
@@ -2418,12 +2315,12 @@ async def on_set_day_hour_value(message: Message, state: FSMContext) -> None:
         await message.answer("Введите целое число часа от 0 до 23")
         return
     user_id = message.from_user.id if message.from_user else 0
-    stub_set_day_change_hour(user_id, int(text))
+    set_day_change_hour(user_id, int(text))
     await state.set_state(None)
     await replace_ui(
         message,
         state,
-        f"✅ Смена суток установлена на {int(text):02d}:00 (🔰 stub)",
+        f"✅ Смена суток установлена на {int(text):02d}:00",
         reply_markup=kb_settings(),
     )
 
@@ -2586,7 +2483,7 @@ async def on_feedback_photo(message: Message, state: FSMContext) -> None:
 @menu_router.message(F.text == BTN_SET_GOAL)
 async def on_set_goal(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    user = stub_get_user(user_id)
+    user = get_user(user_id)
     await state.set_state(MenuFlow.settings_goal)
     await state.update_data(menu_screen="profile")
     await replace_ui(
@@ -2601,11 +2498,11 @@ async def on_set_goal(message: Message, state: FSMContext) -> None:
     )
 
 
-# Сохранение goal (🔰). Если тип изменился — спросить про пересчёт целевых ккал.
+# Сохранение goal в NocoDB. Если тип изменился — спросить про пересчёт целевых ккал.
 @menu_router.message(MenuFlow.settings_goal, F.text.in_(set(GOAL_BY_BTN)))
 async def on_set_goal_value(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    user = stub_get_user(user_id)
+    user = get_user(user_id)
     old_goal = user.get("goal", "")
     new_goal = GOAL_BY_BTN[message.text or ""]
 
@@ -2613,7 +2510,7 @@ async def on_set_goal_value(message: Message, state: FSMContext) -> None:
         await show_profile(message, state)
         return
 
-    stub_set_goal(user_id, new_goal)
+    set_goal(user_id, new_goal)
     await state.set_state(MenuFlow.settings_goal_recalc)
     await state.update_data(menu_screen="profile_goal_recalc")
     await replace_ui(
@@ -2628,7 +2525,7 @@ async def on_set_goal_value(message: Message, state: FSMContext) -> None:
     )
 
 
-# Согласие на пересчёт ккал после смены типа → заглушка (формулу подключим позже).
+# 🎈 Согласие на пересчёт ккал после смены типа → заглушка (формулу подключим позже).
 @menu_router.message(MenuFlow.settings_goal_recalc, F.text == BTN_CONFIRM_RECALC_YES)
 async def on_goal_recalc_yes(message: Message, state: FSMContext) -> None:
     await state.set_state(None)
@@ -2638,7 +2535,7 @@ async def on_goal_recalc_yes(message: Message, state: FSMContext) -> None:
         state,
         "🔜 Пересчёт целевых ккал…\n"
         "\n"
-        "Заглушка: формулу пересчёта подключим позже. "
+        "🎈 Заглушка: формулу пересчёта подключим позже. "
         "Сейчас вы остаётесь в разделе данных профиля",
         reply_markup=kb_profile(),
     )
@@ -2654,7 +2551,7 @@ async def on_goal_recalc_no(message: Message, state: FSMContext) -> None:
 @menu_router.message(F.text == BTN_SET_CALORIES)
 async def on_set_calories(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    user = stub_get_user(user_id)
+    user = get_user(user_id)
     await state.set_state(MenuFlow.settings_calories)
     await state.update_data(menu_screen="profile")
     await replace_ui(
@@ -2668,7 +2565,7 @@ async def on_set_calories(message: Message, state: FSMContext) -> None:
     )
 
 
-# Сохранение daily_calories (🔰) → обновлённая сводка профиля.
+# Сохранение daily_calories в NocoDB → обновлённая сводка профиля.
 @menu_router.message(MenuFlow.settings_calories, F.text, ~F.text.in_(MENU_BUTTON_TEXTS))
 async def on_set_calories_value(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
@@ -2676,7 +2573,7 @@ async def on_set_calories_value(message: Message, state: FSMContext) -> None:
         await message.answer("Введите целое положительное число ккал")
         return
     user_id = message.from_user.id if message.from_user else 0
-    stub_set_daily_calories(user_id, int(text))
+    set_daily_calories(user_id, int(text))
     await show_profile(message, state)
 #endregion
 
@@ -2684,7 +2581,7 @@ async def on_set_calories_value(message: Message, state: FSMContext) -> None:
 # Открыть раздел «Напоминания и Витамины».
 @menu_router.message(F.text == BTN_SET_REMINDERS)
 async def on_set_reminders(message: Message, state: FSMContext) -> None:
-    stub_touch_user_activity(message.from_user.id if message.from_user else 0)
+    touch_user_activity(message.from_user.id if message.from_user else 0)
     await show_reminders(message, state)
 
 
@@ -2755,7 +2652,7 @@ async def on_rem_add_window(message: Message, state: FSMContext) -> None:
     )
 
 
-# Шаг 3: порог → 🔰 INSERT reminder.
+# Шаг 3: порог → INSERT reminder в NocoDB.
 @menu_router.message(
     MenuFlow.reminders_add_min_cal,
     F.text.in_({BTN_REM_ANY_FOOD, BTN_REM_HEARTY}),
@@ -2771,13 +2668,13 @@ async def on_rem_add_min_cal(message: Message, state: FSMContext) -> None:
         await show_reminders(message, state)
         return
     user_id = message.from_user.id if message.from_user else 0
-    row = stub_add_reminder(user_id, title, time_start, time_end, min_cal)
+    row = add_reminder(user_id, title, time_start, time_end, min_cal)
     await state.set_state(None)
     await state.update_data(rem_draft={}, menu_screen="reminders")
     await replace_ui(
         message,
         state,
-        "✅ Напоминание добавлено (🔰 stub)\n"
+        "✅ Напоминание добавлено\n"
         "\n"
         f"{format_reminder_card(row)}\n"
         "\n"
@@ -2790,7 +2687,7 @@ async def on_rem_add_min_cal(message: Message, state: FSMContext) -> None:
 @menu_router.message(F.text == BTN_REM_LIST)
 async def on_rem_list(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    rows = stub_get_reminders(user_id)
+    rows = get_reminders(user_id)
     if not rows:
         await replace_ui(
             message,
@@ -2838,7 +2735,7 @@ async def on_rem_list_page(message: Message, state: FSMContext) -> None:
         page -= 1
     await state.update_data(pick_page=page)
     user_id = message.from_user.id if message.from_user else 0
-    rows = stub_get_reminders(user_id)
+    rows = get_reminders(user_id)
     await replace_ui(
         message,
         state,
@@ -2867,7 +2764,7 @@ async def on_rem_list_pick(message: Message, state: FSMContext) -> None:
         await message.answer(f"Нужен номер от 1 до {len(pick_ids)}")
         return
     user_id = message.from_user.id if message.from_user else 0
-    row = stub_get_reminder(user_id, pick_ids[idx - 1])
+    row = get_reminder(user_id, pick_ids[idx - 1])
     if row is None:
         await show_reminders(message, state)
         return
@@ -2887,17 +2784,17 @@ async def on_rem_toggle(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     rem_id = int(data.get("rem_edit_id") or 0)
     user_id = message.from_user.id if message.from_user else 0
-    row = stub_get_reminder(user_id, rem_id)
+    row = get_reminder(user_id, rem_id)
     if row is None:
         await show_reminders(message, state)
         return
-    stub_set_reminder_active(user_id, rem_id, not bool(row.get("is_active")))
-    row = stub_get_reminder(user_id, rem_id)
+    set_reminder_active(user_id, rem_id, not bool(row.get("is_active")))
+    row = get_reminder(user_id, rem_id)
     assert row is not None
     await replace_ui(
         message,
         state,
-        f"{'▶️ Включено' if row['is_active'] else '⏸ Выключено'} (🔰 stub)\n"
+        f"{'▶️ Включено' if row['is_active'] else '⏸ Выключено'}\n"
         "\n"
         f"{format_reminder_card(row)}",
         reply_markup=kb_reminder_item(),
@@ -2910,7 +2807,7 @@ async def on_rem_delete_ask(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     rem_id = int(data.get("rem_edit_id") or 0)
     user_id = message.from_user.id if message.from_user else 0
-    row = stub_get_reminder(user_id, rem_id)
+    row = get_reminder(user_id, rem_id)
     if row is None:
         await show_reminders(message, state)
         return
@@ -2929,23 +2826,23 @@ async def on_rem_delete_ask(message: Message, state: FSMContext) -> None:
     )
 
 
-# Подтверждение удаления → 🔰 DELETE reminder.
+# Подтверждение удаления → DELETE reminder в NocoDB.
 @menu_router.message(MenuFlow.reminders_delete_confirm, F.text == BTN_REM_DELETE_YES)
 async def on_rem_delete_yes(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     rem_id = int(data.get("rem_edit_id") or 0)
     user_id = message.from_user.id if message.from_user else 0
     title = ""
-    row = stub_get_reminder(user_id, rem_id)
+    row = get_reminder(user_id, rem_id)
     if row:
         title = str(row.get("title") or "")
-    stub_delete_reminder(user_id, rem_id)
+    delete_reminder(user_id, rem_id)
     await state.set_state(None)
     await state.update_data(menu_screen="reminders", rem_edit_id=None)
     await replace_ui(
         message,
         state,
-        f"🗑 Удалено: {title or 'напоминание'} (🔰 stub)",
+        f"🗑 Удалено: {title or 'напоминание'}",
         reply_markup=kb_reminders(),
     )
 
@@ -2956,7 +2853,7 @@ async def on_rem_delete_no(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     rem_id = int(data.get("rem_edit_id") or 0)
     user_id = message.from_user.id if message.from_user else 0
-    row = stub_get_reminder(user_id, rem_id)
+    row = get_reminder(user_id, rem_id)
     if row is None:
         await show_reminders(message, state)
         return
@@ -2978,7 +2875,7 @@ async def on_rem_snooze(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
     user_id = callback.from_user.id
-    ok = stub_snooze_reminder(user_id, int(raw))
+    ok = snooze_reminder(user_id, int(raw))
     await callback.answer("Перенесено на следующую еду" if ok else "Уже недоступно")
     if callback.message:
         try:

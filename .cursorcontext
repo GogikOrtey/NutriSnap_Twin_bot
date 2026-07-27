@@ -4,17 +4,18 @@ Telegram-бот для учёта калорий по фото/тексту (Nut
 
 ## Назначение
 
-Пользователь присылает фото блюда (опционально с подписью) или текст → Gemini возвращает структурированный JSON со `status` → бот ведёт по веткам (unclear / no_food / label / recognized) → превью с кнопками и автоподтверждением → итог печатается в консоль (заглушка дневника). Главное меню (дневник / настройки / выгрузка) — UI на stub-данных с маркером `🔰` до подключения БД.
+Пользователь присылает фото блюда (опционально с подписью) или текст → Gemini возвращает структурированный JSON со `status` → бот ведёт по веткам (unclear / no_food / label / recognized) → превью с кнопками и автоподтверждением → ✅ пишет в NocoDB `food_logs` (+ консоль). Главное меню / дневник / настройки / напоминания — данные из NocoDB через `db_nocodb.py`.
 
 ## Структура
 
 ```
 NutriSnap_Twin_bot/
-├── main.py                # Точка входа: /start, главное меню, stub БД (🔰), роутеры
+├── main.py                # Точка входа: /start, меню, обёртки БД, роутеры
+├── db_nocodb.py           # Клиент NocoDB Data API v3 (users / food_logs / reminders)
 ├── initial_survey.py      # Первичный опрос: профиль → цель → timezone → ккал
 ├── food_recognition.py    # FSM-флоу распознавания еды (Gemini + confirm UI)
-├── requests_DB_test.py    # Песочница HTTP-запросов к NocoDB API (ручная проверка)
-├── nutriclip_DB_swagger_documentation.json  # OpenAPI 3.1 NocoDB (источник правды для API)
+├── requests_DB_test.py    # Песочница: test_users/food_logs/reminders_crud
+├── nutriclip_DB_swagger_documentation.json  # OpenAPI 3.1 NocoDB (источник правды)
 ├── test_3_local.py        # Локальный прототип анализа фото (без Telegram)
 ├── test_4_tg_bot.py       # Минимальный каркас бота (/start + кнопка)
 ├── img_1.jpg              # Тестовое фото для локального запуска
@@ -30,15 +31,13 @@ NutriSnap_Twin_bot/
 ```
 main.py
   ├── Bot + Dispatcher + MemoryStorage
-  ├── /start → start_initial_survey (если INITIAL_SURVEY_ENABLED) иначе show_main_menu
-  ├── include_router(menu_router)          # Reply-меню, дневник, настройки, выгрузка
+  ├── /start → db.get_user? опрос : меню  (INITIAL_SURVEY_ENABLED=False)
+  ├── db_nocodb.py                      # HTTP xc-token → NocoDB
+  ├── include_router(menu_router)
   ├── include_router(setup_initial_survey(on_complete=_on_survey_complete))
-  │     └── welcome → … → goal → timezone → calories_confirm[/edit]
-  │           → stub_set_profile → «всё настроено» + show_recognize (💡)
+  │     └── … → set_profile (upsert users) → show_recognize
   └── include_router(setup_food_recognition(..., on_food_saved=_on_food_saved))
-        └── food_recognition.py (Router: фото/текст/callbacks/FSM)
-            ├── NotMenuButtonFilter — не слать тексты кнопок меню в Gemini
-            └── persist_confirmed_food → on_food_saved → notify_reminders_after_food
+        └── persist_confirmed_food → INSERT food_logs + trigger_reminders_for_food
 ```
 
 ## Актуальная логика
@@ -47,59 +46,37 @@ main.py
 
 - Библиотека: `aiogram` 3.x + `MemoryStorage` (FSM), long polling.
 - Проверка `TELEGRAM_BOT_API_KEY` / `GEMINI_API_KEY`, старт polling.
-- Флаг `INITIAL_SURVEY_ENABLED` (сейчас `True`): при `/start` → `start_initial_survey` вместо главного меню. Позже — проверка в БД «прошёл ли опрос».
-- `/start` (флаг выкл.) → главный экран «🏠 Главный экран | Сегодня» (HTML): ккал `съедено/цель (%%)`, бар `▓▓/█`, остаток или превышение (⚠️ Перебор; при `goal=muscle_gain` — 💪 Донабор), сумма БЖУ, список записей с эмодзи и временем (без БЖУ по блюдам).
-- Дневник (`format_day_card(..., show_item_macros=True)` / `format_log_entry_diary`): запись в 3 строки — время → `emoji блюдо — ккал` → курсив `– (Б Nгр. • Ж Nгр. • У Nгр.)`; между записями пустая строка.
-- `MenuFlow`: выбор блюда (edit/delete), час смены суток, ккал, цель, отзыв, окно выгрузки «месяц», флоу reminders (title → window → min_cal / list → item).
-- ReplyKeyboard: корень / дневник / настройки / выгрузка / цели / напоминания; в разделах (кроме «Распознать») есть `🏠 Главное меню`. Экран «Распознать» — только `⬅️ Назад` (в корень).
-- Дневник: добавить / изменить / удалить (+ Назад / Главное меню). Выгрузка журнала — только из настроек (пункт «Дополнительно» из дневника убран).
-- Inline только в дневнике: `diary:prev` / `diary:next` (◀️ Вчера / ▶️ Завтра). На текущем дне (`diary_offset >= 0`) кнопка «Завтра» скрыта.
-- Навигация меню: Reply → новое сообщение; если есть «Выберите действие:» — оно превращается в новый экран через `edit_text` (без анимации пыли, как «Анализирую…» → превью). Inline «Вчера/Завтра» → `edit_text` карточки. Хвосты служебных — `dismiss_action_prompts` (edit в невидимый символ, не delete).
-- Логическая дата: `timezone` + `day_change_hour` (по умолчанию Europe/Moscow, 4:00).
-- БД не подключена: `stub_get_*` / `stub_set_*` / `stub_set_profile` / `stub_delete_*` / reminders-stub с маркером `🔰` и in-memory данными (3 блюда на «сегодня», поле `emoji`; `reminders` пустой до добавления пользователем).
-- `RECOGNIZE_HINT_TEXT` — общий текст памятки «Распознать» (кнопка меню и финал опроса через `show_recognize`). После опроса сначала «Отлично, всё настроено! ✅…», затем памятка с 💡.
-- Выгрузка журнала → `.txt` (`BufferedInputFile`) с промпт-шапкой профиля; периоды: день / вчера / 7 дней / окна 0–30 / 30–60 / 60–90.
-- Настройки: час смены суток, **🔔 Напоминания и Витамины**, выгрузка, **❓ Инструкции к боту (FAQ)**, обратная связь, «Изменить данные профиля».
-- FAQ (`show_help` / `HELP_OVERVIEW_TEXT` / `HELP_TOPIC_TEXTS`): обзор (~2/3 приветствия опроса) + темы — распознавание, дневник, напоминания, выгрузка, смена суток; `menu_screen=help`, клавиатура `kb_help`, `replace_ui(..., parse_mode="HTML")`.
-- Обратная связь: кнопка «Отправить отзыв или сообщить об ошибке» → подменю (баг / идея) → текст и/или один скриншот → SMTP-письмо на `FEEDBACK_TO_EMAIL` (`send_feedback_email`, Yandex по умолчанию). Нужны `SMTP_USER` / `SMTP_PASSWORD` (пароль приложения) в `.env`.
-- Напоминания (`reminders`): title + окно (Завтрак 07–11 / Обед 12–16 / Ужин 17–22) + `min_calories` (0 или 250); список с вкл/выкл и удалением. После ✅ еды — `stub_trigger_reminders_for_food` → сообщение «🔔 Нужно: …» с inline «⏰ На следующую еду» / «✅ Понятно». Заморозка по `last_active_at` (>3 дня) и «пропущено по концу окна» — stub/cron позже (`stub_check_missed_reminders`).
-- «Изменить данные профиля»: сводка (имя/пол/возраст/рост/вес/активность/цель/ккал); кнопки «Обновить данные пользователя» (подтверждение → заглушка онбординга), «Тип отслеживания», «Целевые ккал».
-- «Тип отслеживания»: показывает текущий `goal`; при смене на другой — «данные обновлены» + вопрос про пересчёт целевых ккал (`settings_goal_recalc`); Да → заглушка пересчёта, Нет/Назад → сводка профиля. Тот же тип — сразу назад без вопроса.
-- «Изменить / Удалить блюдо»: Reply-клавиатура с номерами (по 5 в ряд, страница по 10: `kb_pick_dish` + `▶️ Далее` / `◀️ Ранее`); снизу «⬅️ Назад». Выбор номера → edit-заглушка / stub delete.
+- `INITIAL_SURVEY_ENABLED = False`: `/start` смотрит NocoDB `users` — нет записи → опрос, есть → главное меню. Флаг `True` принудительно всегда открывает опрос (отладка UI).
+- `/start` (есть профиль) → «🏠 Главный экран | Сегодня» из реальных `food_logs`.
+- Дневник / выгрузка / настройки / reminders — через обёртки `get_user`, `get_food_logs_*`, `set_*`, `add_reminder`, … → `db_nocodb`.
+- После ✅ еды: `_on_food_saved` → `insert_food_log_from_result` (emoji в `details_json`) → `trigger_reminders_for_food`.
+- Сброс `is_triggered_today` при смене логических суток — process-local `_reminder_day_reset` (до полноценного cron).
+- `🎈` незавершённое: edit dish (`on_edit_dish_pick`), missed reminders (`check_missed_reminders`), перезапуск опроса из профиля, пересчёт ккал после смены goal.
+- ReplyKeyboard / Inline / логическая дата / FAQ / SMTP feedback — без изменений UX.
+
+### `db_nocodb.py`
+
+- Транспорт: `urllib` + `xc-token` + UTF-8 JSON; `NocoDBError` при HTTP ≠ 2xx.
+- Table IDs: users=`meooj41uwpyrx9t`, food_logs=`mqhuz4edun8xpdc`, reminders=`m04n35tamrsu1wn`.
+- CRUD: `get_user` / `create_user` / `update_user` / `delete_user` / `upsert_profile`; food_logs list/insert/delete; reminders CRUD + toggle/snooze/mark_triggered.
+- Связь владельца: поле Link `users: {id: telegram_id}` (не колонка `user_id`).
+- `sort` v3: JSON `[{"field":"…","direction":"asc"}]`.
+- `emoji` только внутри `details_json`; при чтении поднимается в плоское поле для UI.
+- Enum как в боте: `gender` male/female, `goal` weight_loss/muscle_gain/maintain.
+
+### `requests_DB_test.py`
+
+- Песочница поверх `db_nocodb`: `test_users_crud`, `test_food_logs_crud`, `test_reminders_crud`.
+- Правило: новый запрос сначала прогонять здесь (2xx + до/после для DELETE), потом встраивать в бота. После 5 неудач подряд при верной доке — стоп, проверить NocoDB IDE.
 
 ### `initial_survey.py`
 
-- Router `initial_survey` + FSM `SurveyFlow`: `welcome` → `category` → `name` → `gender` → `height` → `weight` → `age` → `activity` → `goal` → `timezone` → `timezone_city` → `calories_confirm` → `calories_edit`.
-- Приветствие (HTML, бренд NutriClick) + inline-кнопка `🚀 Начать короткий опрос` (`survey:start`) под сообщением.
-- Категория: Люди (ккал) → дальше; Роботы/Нейросети → «в разработке», остаёмся на шаге.
-- Выбор — Reply-кнопки; имя/рост/вес/возраст — текст с валидацией. Активность = коэффициенты `1.2…1.9`; цель = `weight_loss` / `muscle_gain` / `maintain`.
-- После цели: «Отлично, ещё пара вопросов:» → timezone.
-- Timezone UX: первой кнопкой `📍 Поделиться локацией` (`request_location`; координаты не храним) + Москва/СПб, Екатеринбург, Владивосток + «Другой город…» (geopy Nominatim → timezonefinder). Зависимости: `geopy`, `timezonefinder`.
-- Ккал: Mifflin–St Jeor × activity × goal (−15% / +15% / 0); вне 1200–5000 или ошибка → Gemini fallback (промпт: при абсурдных входах ~2000); inline `✅ Подтвердить` / `✏️ Редактировать`.
-- `setup_initial_survey(on_complete=...)` → router; `on_complete` в main: `stub_set_profile` (+ timezone, daily_calories; `user_id` из profile при confirm из callback) → `show_recognize`.
-- Фото во время опроса: ответ «Сначала закончите короткий опрос».
+- Router `initial_survey` + FSM `SurveyFlow`: `welcome` → … → `calories_confirm` / `calories_edit`.
+- `on_complete` в main: `set_profile` (upsert NocoDB) → «всё настроено» + `show_recognize`.
 
 ### `food_recognition.py`
 
-- SDK: `google.genai`, ключ `GEMINI_API_KEY`.
-- Очередь моделей (`MODELS_QUEUE`, таймаут 10 с, retries SDK = 1):  
-  `gemini-flash-latest` → `gemini-3.5-flash` → `gemini-3.1-flash-lite` → `gemini-2.5-flash`.
-- Схема `FoodResult`: `status`, `dish`, `emoji`, `calories`, `proteins`, `fats`, `carbs`, `portion_g`, `portion_known`, `is_label`.
-- Статусы ИИ: `recognized` | `unclear` | `no_food` | `label` | `bad_desc`.
-- Входы: фото / фото+caption / только текст (`analyze_food_photo`, `analyze_food_text`). Фото и текст: `StateFilter(None, FoodFlow.confirming)` — не перехватывать FSM опроса.
-- `portion_g` обязателен при `recognized`: с фото — оценка веса порции; с текста — указанный вес или типичная средняя порция блюда.
-- `emoji` — один эмодзи блюда (промпт + схема); сохраняется вместе с результатом (в stub/`food_logs` — поле `emoji`); в UI слева от названия (fallback `🍽`).
-- Превью (`format_food_result`): `{emoji}  {dish}`, сразу под названием — «Примерная порция: ~N г» (для этикетки — «Порция: N г»).
-- FSM: `confirming` | `editing_choice` | `waiting_hint` | `waiting_weight`.
-- Confirm UI: ✏️ / ✅ (+ ⚖️ для этикетки); авто ✅ через 10 с (`confirm_token`).
-- Превью с ✏️/✅ добивается до `MIN_CONFIRM_MSG_WIDTH=30` (`WIDTH_PAD_CHAR=⠀`); после ✅/`finalize_confirmed_preview` — обычная ширина без паддинга.
-- ✏️ → reply-меню (`editing_choice`): вес порции / дополнить описание / заменить ввод / не сохранять / «🏠 Главное меню».
-- Reply «🏠 Главное меню»: скрывается с отправки фото/текста (`hide_reply_keyboard` — отдельное сообщение с `ReplyKeyboardRemove`, сразу удаляется) и на протяжении confirming; снова появляется в меню «✏️ Изменить», после ✅ / авто-✅ / «❌ Не сохранять» / «Отмена» / ошибок анализа. Нельзя вешать `ReplyKeyboardRemove` на статус «Анализирую…» — Telegram запрещает `edit` таких сообщений.
-- Этикетка без объёма → `portion_g = 100`; ⚖️ или «Изменить вес» → пропорциональный пересчёт КБЖУ.
-- «Сохранение»: `persist_confirmed_food` → `save_to_console` + колбэк `on_food_saved` (в `main` — триггер reminders). Реальная запись в `food_logs` — не реализована.
-- Подключение: `setup_food_recognition(storage, menu_button_texts=..., main_menu_button_text=..., on_food_saved=...)` → `Router`.
-
-Запуск: `python main.py` (останови предыдущий polling-процесс бота, если был).
+- Без изменений флоу Gemini/FSM; `persist_confirmed_food` → консоль + `on_food_saved` (запись в БД в main).
 
 ## Переменные окружения
 
@@ -123,12 +100,11 @@ main.py
 - Table IDs: `users`=`meooj41uwpyrx9t`, `food_logs`=`mqhuz4edun8xpdc`, `reminders`=`m04n35tamrsu1wn`.
 - Имена таблиц в NocoDB: `NutriClip_tg_bot_users` / `_food_logs` / `_reminders`.
 - Связи (LinkToAnotherRecord), не SQL `user_id`: у users → `food_logs`=`cpzklvizorll7e2`, `reminders`=`cghqt6ph326wsmn`; у food_logs → `users`=`ciru4l8rjn8ak0p`; у reminders → `users`=`cii2y6a4f443637`. В ответе связь — поле `users: {id}` / массивы `food_logs`/`reminders`.
-- Полный OpenAPI 3.1: `nutriclip_DB_swagger_documentation.json` (CRUD + count + links, схемы Request/Response, auth `xc-token`). Использовать как источник правды для запросов.
+- Полный OpenAPI 3.1: `nutriclip_DB_swagger_documentation.json`.
 - Формат ответа list: `{ "records": [ { "id", "id_fields", "fields": {...} } ], "nestedNext" }`.
-- Песочница запросов: `requests_DB_test.py` (`python requests_DB_test.py`) — писать/гонять запросы и смотреть JSON до встраивания в бота.
-- В текстовых полях БД есть **русские символы** (`first_name`, `goal`, и т.п.). Запросы/ответы — **UTF-8**: body через `json.dumps(..., ensure_ascii=False).encode("utf-8")`, чтение ответа `decode("utf-8")`, печать с `ensure_ascii=False`; на Windows — `sys.stdout.reconfigure(encoding="utf-8")`, иначе кириллица в консоли «ломается».
-- Пока stub (`🔰`) в боте; реальные запросы — в процессе подключения.
-- Поля схемы также в `add_info.md`; нюанс NocoDB: FK через Links (`users`), не колонка `user_id`.
+- Песочница: `python requests_DB_test.py`.
+- UTF-8: `json.dumps(..., ensure_ascii=False).encode("utf-8")`; на Windows — `sys.stdout.reconfigure(encoding="utf-8")`.
+- Клиент бота: `db_nocodb.py` (подключён). Маркер `🔰` снят у рабочих мест; незавершённая логика — `🎈`.
 
 ### Таблица `users` (профиль)
 
@@ -150,31 +126,31 @@ main.py
 
 ### Таблица `food_logs` (подтверждённые приёмы пищи)
 
-Поля `title`/`calories`/`proteins`/`fats`/`carbs`/`portion_g` ↔ `FoodResult` (`dish` → `title`). Индекс: `(user_id, logged_date)`.
+Поля `title`/`calories`/`proteins`/`fats`/`carbs`/`portion_g` ↔ `FoodResult` (`dish` → `title`). Связь владельца — Link `users`. `emoji` — в `details_json`.
 
 | Поле | Тип | Назначение |
 |---|---|---|
 | `id` | BIGINT PK | Автоинкремент |
-| `user_id` | BIGINT FK → users.id | Владелец |
 | `title` | VARCHAR(255) | Название блюда (`FoodResult.dish`) |
 | `calories` | INT | ккал |
 | `proteins` / `fats` / `carbs` | FLOAT | БЖУ, г |
 | `portion_g` | FLOAT | Вес порции, г |
-| `logged_date` | VARCHAR(10) | Логическая дата `YYYY-MM-DD` (сдвиг `day_change_hour`) |
+| `logged_date` | VARCHAR(10) | Логическая дата `YYYY-MM-DD` |
 | `created_at` | BIGINT | Unix time добавления |
-| `details_json` | JSONB/TEXT | Сырой JSON Gemini (`FoodResult.model_dump_json()`; в т.ч. `emoji`) |
+| `details_json` | JSON | Сырой JSON Gemini (в т.ч. `emoji`) |
+| `users` | Link | `{id: telegram_id}` |
 
 ### Таблица `reminders` (напоминания / витамины)
 
 | Поле | Тип | Назначение |
 |---|---|---|
 | `id` | BIGINT PK | Автоинкремент |
-| `user_id` | BIGINT FK → users.id | Владелец |
 | `title` | VARCHAR(255) | Текст («Выпить Омега-3») |
 | `time_start` / `time_end` | VARCHAR(5) | Окно `'HH:MM'` |
 | `min_calories` | INT (default 0) | `0` — любая еда; `>=250` — крупный приём |
 | `is_triggered_today` | BOOLEAN (default False) | Уже сработало за текущие сутки |
 | `is_active` | BOOLEAN (default True) | Вкл/выкл пользователем |
+| `users` | Link | `{id: telegram_id}` |
 
 ## Зависимости (по коду)
 
@@ -184,18 +160,18 @@ main.py
 
 ## Планируемое развитие
 
-- Заменить `🔰` stub на запросы к NocoDB API (таблицы `users` / `food_logs` / `reminders`).
-- Хранить в БД «прошёл ли опрос»; выключить `INITIAL_SURVEY_ENABLED` и роутить по БД.
-- Подключить «Обновить данные пользователя» к `start_initial_survey`.
-- Планировщик «пропущенных» напоминаний по концу окна + сброс `is_triggered_today` по `day_change_hour`.
-- Дневной лимит распознаваний (на ветке «Неверно» → подсказка).
-- Форма редактирования блюда (сейчас только выбор + stub).
+- Подключить «Обновить данные пользователя» к `start_initial_survey` (сейчас `🎈`).
+- Форма редактирования блюда / UPDATE food_logs (`🎈`).
+- Планировщик пропущенных напоминаний + надёжный сброс `is_triggered_today` по `day_change_hour` (сейчас process-local / `🎈`).
+- Пересчёт целевых ккал после смены goal (`🎈`).
+- Дневной лимит распознаваний.
 
 ## Важные договорённости
 
 - Для функций — краткий комментарий-аннотация: зачем, что делает и где используется.
-- В `main.py`, `food_recognition.py` и `initial_survey.py` сверху файла — модульный docstring; при изменениях обновлять.
-- Места будущих SQL-запросов помечать `🔰` (поиск по репозиторию).
+- В `main.py`, `food_recognition.py`, `initial_survey.py`, `db_nocodb.py` сверху — модульный docstring; при изменениях обновлять.
+- Новые запросы к NocoDB: сначала `requests_DB_test.py` (2xx), потом код бота. 5 фейлов подряд → стоп, проверить IDE NocoDB.
+- Незавершённую логику помечать `🎈`.
 - Не опираться на код в `Старое/` при новых изменениях.
 - Секреты только в `.env`.
 - Тексты пользователю в Telegram: дружелюбный тон без точки в конце сообщения (последнее предложение / весь пузырь не завершать `.`). Точки внутри текста (между предложениями), сокращения (`гр.`, `стр.`), `!`/`?`, а также содержимое выгрузки `.txt` и сообщения консоли/SystemExit — оставлять как есть. Ориентир — стиль `food_recognition.py`.
