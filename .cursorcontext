@@ -14,6 +14,7 @@ NutriSnap_Twin_bot/
 ├── initial_survey.py      # Первичный опрос: профиль → цель → timezone → ккал
 ├── food_recognition.py    # FSM-флоу распознавания еды (Gemini + confirm UI)
 ├── requests_DB_test.py    # Песочница HTTP-запросов к NocoDB API (ручная проверка)
+├── nutriclip_DB_swagger_documentation.json  # OpenAPI 3.1 NocoDB (источник правды для API)
 ├── test_3_local.py        # Локальный прототип анализа фото (без Telegram)
 ├── test_4_tg_bot.py       # Минимальный каркас бота (/start + кнопка)
 ├── img_1.jpg              # Тестовое фото для локального запуска
@@ -119,11 +120,14 @@ main.py
 - Swagger: `https://skynode.nocodb.api.gogortey.ru/api/v3/meta/bases/p6iywpukq1yiryf/swagger`
 - Ключ: `NOCODB_SKYNODE_API_KEY` в `.env` → заголовок `xc-token`.
 - Data API v3: `/api/v3/data/{baseId}/{tableId}/records` (+ `/{recordId}` для одной записи).
-- Table ID `users`: `meooj41uwpyrx9t` (`food_logs` / `reminders` — дописать при появлении ID).
+- Table IDs: `users`=`meooj41uwpyrx9t`, `food_logs`=`mqhuz4edun8xpdc`, `reminders`=`m04n35tamrsu1wn`.
+- Имена таблиц в NocoDB: `NutriClip_tg_bot_users` / `_food_logs` / `_reminders`.
+- Связи (LinkToAnotherRecord), не SQL `user_id`: у users → `food_logs`=`cpzklvizorll7e2`, `reminders`=`cghqt6ph326wsmn`; у food_logs → `users`=`ciru4l8rjn8ak0p`; у reminders → `users`=`cii2y6a4f443637`. В ответе связь — поле `users: {id}` / массивы `food_logs`/`reminders`.
+- Полный OpenAPI 3.1: `nutriclip_DB_swagger_documentation.json` (CRUD + count + links, схемы Request/Response, auth `xc-token`). Использовать как источник правды для запросов.
 - Формат ответа list: `{ "records": [ { "id", "id_fields", "fields": {...} } ], "nestedNext" }`.
 - Песочница запросов: `requests_DB_test.py` (`python requests_DB_test.py`) — писать/гонять запросы и смотреть JSON до встраивания в бота.
 - Пока stub (`🔰`) в боте; реальные запросы — в процессе подключения.
-- Полное описание схемы также в `add_info.md` (раздел «Структура БД»).
+- Поля схемы также в `add_info.md`; нюанс NocoDB: FK через Links (`users`), не колонка `user_id`.
 
 ### Таблица `users` (профиль)
 

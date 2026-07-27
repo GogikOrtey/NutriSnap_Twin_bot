@@ -1,0 +1,3254 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "NocoDB v3",
+        "version": "3.0",
+        "description": "NocoDB API Documentation"
+    },
+    "servers": [
+        {
+            "url": "https://skynode.nocodb.api.gogortey.ru"
+        },
+        {
+            "url": "{customUrl}",
+            "variables": {
+                "customUrl": {
+                    "default": "https://skynode.nocodb.api.gogortey.ru",
+                    "description": "Provide custom nocodb app base url"
+                }
+            }
+        }
+    ],
+    "paths": {
+        "/api/v3/data/p6iywpukq1yiryf/meooj41uwpyrx9t/records": {
+            "get": {
+                "summary": "NutriClip_tg_bot_users list",
+                "operationId": "nutriclip_tg_bot_users-db-table-row-list",
+                "description": "List all rows from **NutriClip_tg_bot_users** table. Fields to be included in the response can be refined through query parameters. Additionally, filtering, sorting, and pagination can be applied to the results.",
+                "tags": [
+                    "NutriClip_tg_bot_users"
+                ],
+                "parameters": [
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "fields",
+                        "description": "Specify fields to include in the API response. String representing stringified JSON array of field names or field ids. \n\nExample: fields=`[\"field1\"]` or fields=`[\"field1\",\"field2\"]` will include only field1 (with field2 on 2nd example) in the response."
+                    },
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "sort",
+                        "description": "Allows you to specify the fields by which you want to sort the records in your API response. A string representing stringified JSON array of objects. Each object must have a 'field' property specifying the field name and an optional 'direction' property with value 'asc' or 'desc'. If **viewId** query parameter is also included, the sort included here will take precedence over any sorting configuration defined in the view. \n\nExample: sort=`[{\"direction\":\"asc\", \"field\":\"field1\"}]` will sort records in ascending order based on field1."
+                    },
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "where",
+                        "description": "Enables defining conditions to filter records in the API response. Multiple conditions can be combined using the logical operators 'and' or 'or'. Each condition consists of three components: a field name, a comparison operator, and a value.\n\nExample: where=`(field1,eq,value1)~and(field2,eq,value2)` will filter records where field1 equals value1 AND field2 equals value2.\n\nIf **viewId** parameter is also included, these filters are applied on top of the view’s predefined filter configuration. \n\n**NOTE**: Maintain the specified format; do not include spaces between components of a condition. For further information on this please see [the documentation](https://nocodb.com/docs/product-docs/developer-resources/rest-apis#v3-where-query-parameter)"
+                    },
+                    {
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "in": "query",
+                        "name": "page",
+                        "description": "Controls pagination of the API response by specifying the page number to retrieve. By default, the first page is returned. Increment the page number to retrieve subsequent pages.\n\nExample: page=`2` will return the second page of data records in the dataset."
+                    },
+                    {
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "in": "query",
+                        "name": "nestedPage",
+                        "description": "Controls pagination of nested (linked) records in the API response by specifying the page number. By default, the first page is returned; increment the page number to retrieve subsequent pages.\n\nExample: nestedPage=`2` will return the second page of nested data records in the dataset."
+                    },
+                    {
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "in": "query",
+                        "name": "pageSize",
+                        "description": "Sets a limit on the number of records returned in the API response. By default, all available records are returned, but this parameter allows you to control the quantity.\n\nExample: pageSize=`100` will limit the response to 100 records per page."
+                    },
+                    {
+                        "schema": {
+                            "type": "string",
+                            "enum": [
+                                "vw0ab6sbzenra0sn"
+                            ]
+                        },
+                        "description": "Fetches records that are visible within a specific view. If the view has sorting enabled, the API returns records in the same order as displayed in the view. Specifying a **sort** query parameter overrides the view’s sorting configuration. Similarly, a **where** query parameter applies additional filtering on top of the view’s filters. By default, all fields—including those disabled in the view—are included in the response. Use the **fields** query parameter to include or exclude specific fields and customize the output.\n\n**Views:**\n* vw0ab6sbzenra0sn - users",
+                        "name": "viewId",
+                        "in": "query",
+                        "required": false
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "records": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/NutriClip_tg_bot_usersResponse"
+                                            }
+                                        },
+                                        "next": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Pagination token for next page"
+                                        },
+                                        "prev": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Pagination token for previous page"
+                                        },
+                                        "nestedNext": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Nested pagination token for next page"
+                                        },
+                                        "nestedPrev": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Nested pagination token for previous page"
+                                        }
+                                    },
+                                    "required": [
+                                        "records"
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "summary": "NutriClip_tg_bot_users create",
+                "description": "Insert a new row in table by providing a key value pair object where key refers to the column alias. All the required fields should be included with payload excluding `autoincrement` and column with default value.",
+                "operationId": "nutriclip_tg_bot_users-create",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "records": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/NutriClip_tg_bot_usersResponse"
+                                            }
+                                        }
+                                    },
+                                    "required": [
+                                        "records"
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "tags": [
+                    "NutriClip_tg_bot_users"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "$ref": "#/components/schemas/NutriClip_tg_bot_usersRequest"
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "$ref": "#/components/schemas/NutriClip_tg_bot_usersRequest"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "summary": "NutriClip_tg_bot_users update",
+                "operationId": "nutriclip_tg_bot_users-update",
+                "description": "Partial update row in table by providing a key value pair object where key refers to the column alias. You need to only include columns which you want to update.",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "records": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/NutriClip_tg_bot_usersResponse"
+                                            }
+                                        }
+                                    },
+                                    "required": [
+                                        "records"
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "tags": [
+                    "NutriClip_tg_bot_users"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "$ref": "#/components/schemas/NutriClip_tg_bot_usersUpdateRequest"
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "$ref": "#/components/schemas/NutriClip_tg_bot_usersUpdateRequest"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "summary": "NutriClip_tg_bot_users delete",
+                "operationId": "nutriclip_tg_bot_users-delete",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "tags": [
+                    "NutriClip_tg_bot_users"
+                ],
+                "description": "Delete a row by using the **primary key** column value.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "$ref": "#/components/schemas/NutriClip_tg_bot_usersIdRequest"
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "$ref": "#/components/schemas/NutriClip_tg_bot_usersIdRequest"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v3/data/p6iywpukq1yiryf/meooj41uwpyrx9t/records/{recordId}": {
+            "parameters": [
+                {
+                    "schema": {
+                        "type": "string"
+                    },
+                    "name": "recordId",
+                    "in": "path",
+                    "required": true,
+                    "example": 1,
+                    "description": "Primary key of the record you want to read."
+                },
+                {
+                    "schema": {
+                        "type": "string"
+                    },
+                    "in": "query",
+                    "name": "fields",
+                    "description": "Specify fields to include in the API response. String representing stringified JSON array of field names or field ids. \n\nExample: fields=`[\"field1\"]` or fields=`[\"field1\",\"field2\"]` will include only field1 (with field2 on 2nd example) in the response."
+                }
+            ],
+            "get": {
+                "summary": "NutriClip_tg_bot_users read",
+                "description": "Read a row data by using the **primary key** column value.",
+                "operationId": "nutriclip_tg_bot_users-read",
+                "tags": [
+                    "NutriClip_tg_bot_users"
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/NutriClip_tg_bot_usersResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v3/data/p6iywpukq1yiryf/meooj41uwpyrx9t/count": {
+            "parameters": [
+                {
+                    "schema": {
+                        "type": "string",
+                        "enum": [
+                            "vw0ab6sbzenra0sn"
+                        ]
+                    },
+                    "description": "Fetches records that are visible within a specific view. If the view has sorting enabled, the API returns records in the same order as displayed in the view. Specifying a **sort** query parameter overrides the view’s sorting configuration. Similarly, a **where** query parameter applies additional filtering on top of the view’s filters. By default, all fields—including those disabled in the view—are included in the response. Use the **fields** query parameter to include or exclude specific fields and customize the output.\n\n**Views:**\n* vw0ab6sbzenra0sn - users",
+                    "name": "viewId",
+                    "in": "query",
+                    "required": false
+                }
+            ],
+            "get": {
+                "summary": "NutriClip_tg_bot_users count",
+                "operationId": "nutriclip_tg_bot_users-count",
+                "description": "Get rows count of a table by applying optional filters.",
+                "tags": [
+                    "NutriClip_tg_bot_users"
+                ],
+                "parameters": [
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "where",
+                        "description": "Enables defining conditions to filter records in the API response. Multiple conditions can be combined using the logical operators 'and' or 'or'. Each condition consists of three components: a field name, a comparison operator, and a value.\n\nExample: where=`(field1,eq,value1)~and(field2,eq,value2)` will filter records where field1 equals value1 AND field2 equals value2.\n\nIf **viewId** parameter is also included, these filters are applied on top of the view’s predefined filter configuration. \n\n**NOTE**: Maintain the specified format; do not include spaces between components of a condition. For further information on this please see [the documentation](https://nocodb.com/docs/product-docs/developer-resources/rest-apis#v3-where-query-parameter)"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "count": {
+                                            "type": "number"
+                                        }
+                                    }
+                                },
+                                "examples": {
+                                    "Example 1": {
+                                        "value": {
+                                            "count": 3
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                }
+            }
+        },
+        "/api/v3/data/p6iywpukq1yiryf/meooj41uwpyrx9t/links/{linkFieldId}/{recordId}": {
+            "parameters": [
+                {
+                    "schema": {
+                        "type": "string",
+                        "enum": [
+                            "cpzklvizorll7e2",
+                            "cghqt6ph326wsmn"
+                        ]
+                    },
+                    "name": "linkFieldId",
+                    "in": "path",
+                    "required": true,
+                    "description": "**Links Field Identifier** corresponding to the relation field **Links** or **LinkToAnotherRecord** established between tables.\n\nLink Columns:\n* cpzklvizorll7e2 - food_logs\n* cghqt6ph326wsmn - reminders"
+                },
+                {
+                    "schema": {
+                        "type": "string"
+                    },
+                    "name": "recordId",
+                    "in": "path",
+                    "required": true,
+                    "example": 1,
+                    "description": "Primary key of the record you want to read."
+                }
+            ],
+            "get": {
+                "summary": "Link Records list",
+                "operationId": "nutriclip_tg_bot_users-nested-list",
+                "description": "This API endpoint allows you to retrieve list of linked records for a specific `Link field` and `Record ID`. The response is an array of objects containing Primary Key and its corresponding display value.",
+                "tags": [
+                    "NutriClip_tg_bot_users"
+                ],
+                "parameters": [
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "fields",
+                        "description": "Specify fields to include in the API response. String representing stringified JSON array of field names or field ids. \n\nExample: fields=`[\"field1\"]` or fields=`[\"field1\",\"field2\"]` will include only field1 (with field2 on 2nd example) in the response."
+                    },
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "sort",
+                        "description": "Allows you to specify the fields by which you want to sort the records in your API response. A string representing stringified JSON array of objects. Each object must have a 'field' property specifying the field name and an optional 'direction' property with value 'asc' or 'desc'. If **viewId** query parameter is also included, the sort included here will take precedence over any sorting configuration defined in the view. \n\nExample: sort=`[{\"direction\":\"asc\", \"field\":\"field1\"}]` will sort records in ascending order based on field1."
+                    },
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "where",
+                        "description": "Enables defining conditions to filter records in the API response. Multiple conditions can be combined using the logical operators 'and' or 'or'. Each condition consists of three components: a field name, a comparison operator, and a value.\n\nExample: where=`(field1,eq,value1)~and(field2,eq,value2)` will filter records where field1 equals value1 AND field2 equals value2.\n\nIf **viewId** parameter is also included, these filters are applied on top of the view’s predefined filter configuration. \n\n**NOTE**: Maintain the specified format; do not include spaces between components of a condition. For further information on this please see [the documentation](https://nocodb.com/docs/product-docs/developer-resources/rest-apis#v3-where-query-parameter)"
+                    },
+                    {
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "in": "query",
+                        "name": "page",
+                        "description": "Controls pagination of the API response by specifying the page number to retrieve. By default, the first page is returned. Increment the page number to retrieve subsequent pages.\n\nExample: page=`2` will return the second page of data records in the dataset."
+                    },
+                    {
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "in": "query",
+                        "name": "pageSize",
+                        "description": "Sets a limit on the number of records returned in the API response. By default, all available records are returned, but this parameter allows you to control the quantity.\n\nExample: pageSize=`100` will limit the response to 100 records per page."
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "records": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/NutriClip_tg_bot_usersResponse"
+                                            }
+                                        },
+                                        "next": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Pagination token for next page"
+                                        },
+                                        "prev": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Pagination token for previous page"
+                                        },
+                                        "nestedNext": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Nested pagination token for next page"
+                                        },
+                                        "nestedPrev": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Nested pagination token for previous page"
+                                        }
+                                    },
+                                    "required": [
+                                        "records"
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                }
+            },
+            "post": {
+                "summary": "Link Records",
+                "operationId": "nutriclip_tg_bot_users-nested-link",
+                "responses": {
+                    "200": {
+                        "description": "Records successfully linked",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {
+                                            "type": "boolean",
+                                            "description": "Indicates whether the linking operation was successful"
+                                        }
+                                    },
+                                    "required": [
+                                        "success"
+                                    ]
+                                },
+                                "examples": {
+                                    "Success Response": {
+                                        "value": {
+                                            "success": true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "tags": [
+                    "NutriClip_tg_bot_users"
+                ],
+                "requestBody": {
+                    "required": true,
+                    "description": "Record objects to be linked, each containing an id field",
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {
+                                                "type": "string",
+                                                "description": "Unique identifier for the record"
+                                            }
+                                        },
+                                        "required": [
+                                            "id"
+                                        ]
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "id": {
+                                                    "type": "string",
+                                                    "description": "Unique identifier for the record"
+                                                }
+                                            },
+                                            "required": [
+                                                "id"
+                                            ]
+                                        }
+                                    }
+                                ]
+                            },
+                            "examples": {
+                                "Single Record": {
+                                    "summary": "Link a single record",
+                                    "value": {
+                                        "id": "22"
+                                    }
+                                },
+                                "Multiple Records": {
+                                    "summary": "Link multiple records",
+                                    "value": [
+                                        {
+                                            "id": "43"
+                                        },
+                                        {
+                                            "id": "44"
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                },
+                "description": "This API endpoint allows you to link records to a specific `Link field` and `Record ID`. The request payload is an array of record-ids from the adjacent table for linking purposes. Note that any existing links, if present, will be unaffected during this operation.",
+                "parameters": [
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "name": "recordId",
+                        "in": "path",
+                        "required": true,
+                        "example": 1,
+                        "description": "Primary key of the record you want to read."
+                    }
+                ]
+            },
+            "delete": {
+                "summary": "Unlink Records",
+                "operationId": "nutriclip_tg_bot_users-nested-unlink",
+                "responses": {
+                    "200": {
+                        "description": "Records successfully unlinked",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {
+                                            "type": "boolean",
+                                            "description": "Indicates whether the unlink operation was successful"
+                                        }
+                                    },
+                                    "required": [
+                                        "success"
+                                    ]
+                                },
+                                "examples": {
+                                    "Success Response": {
+                                        "value": {
+                                            "success": true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "tags": [
+                    "NutriClip_tg_bot_users"
+                ],
+                "requestBody": {
+                    "required": true,
+                    "description": "Record objects to be unlinked, each containing an id field",
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {
+                                                "type": "string",
+                                                "description": "Unique identifier for the record"
+                                            }
+                                        },
+                                        "required": [
+                                            "id"
+                                        ]
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "id": {
+                                                    "type": "string",
+                                                    "description": "Unique identifier for the record"
+                                                }
+                                            },
+                                            "required": [
+                                                "id"
+                                            ]
+                                        }
+                                    }
+                                ]
+                            },
+                            "examples": {
+                                "Single Record": {
+                                    "summary": "Unlink a single record",
+                                    "value": {
+                                        "id": "22"
+                                    }
+                                },
+                                "Multiple Records": {
+                                    "summary": "Unlink multiple records",
+                                    "value": [
+                                        {
+                                            "id": "43"
+                                        },
+                                        {
+                                            "id": "44"
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                },
+                "description": "This API endpoint allows you to unlink records from a specific `Link field` and `Record ID`. The request payload is an array of record-ids from the adjacent table for unlinking purposes. Note that, \n- duplicated record-ids will be ignored.\n- non-existent record-ids will be ignored.",
+                "parameters": [
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "name": "recordId",
+                        "in": "path",
+                        "required": true,
+                        "example": 1,
+                        "description": "Primary key of the record you want to read."
+                    }
+                ]
+            }
+        },
+        "/api/v3/data/p6iywpukq1yiryf/mqhuz4edun8xpdc/records": {
+            "get": {
+                "summary": "NutriClip_tg_bot_food_logs list",
+                "operationId": "nutriclip_tg_bot_food_logs-db-table-row-list",
+                "description": "List all rows from **NutriClip_tg_bot_food_logs** table. Fields to be included in the response can be refined through query parameters. Additionally, filtering, sorting, and pagination can be applied to the results.",
+                "tags": [
+                    "NutriClip_tg_bot_food_logs"
+                ],
+                "parameters": [
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "fields",
+                        "description": "Specify fields to include in the API response. String representing stringified JSON array of field names or field ids. \n\nExample: fields=`[\"field1\"]` or fields=`[\"field1\",\"field2\"]` will include only field1 (with field2 on 2nd example) in the response."
+                    },
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "sort",
+                        "description": "Allows you to specify the fields by which you want to sort the records in your API response. A string representing stringified JSON array of objects. Each object must have a 'field' property specifying the field name and an optional 'direction' property with value 'asc' or 'desc'. If **viewId** query parameter is also included, the sort included here will take precedence over any sorting configuration defined in the view. \n\nExample: sort=`[{\"direction\":\"asc\", \"field\":\"field1\"}]` will sort records in ascending order based on field1."
+                    },
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "where",
+                        "description": "Enables defining conditions to filter records in the API response. Multiple conditions can be combined using the logical operators 'and' or 'or'. Each condition consists of three components: a field name, a comparison operator, and a value.\n\nExample: where=`(field1,eq,value1)~and(field2,eq,value2)` will filter records where field1 equals value1 AND field2 equals value2.\n\nIf **viewId** parameter is also included, these filters are applied on top of the view’s predefined filter configuration. \n\n**NOTE**: Maintain the specified format; do not include spaces between components of a condition. For further information on this please see [the documentation](https://nocodb.com/docs/product-docs/developer-resources/rest-apis#v3-where-query-parameter)"
+                    },
+                    {
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "in": "query",
+                        "name": "page",
+                        "description": "Controls pagination of the API response by specifying the page number to retrieve. By default, the first page is returned. Increment the page number to retrieve subsequent pages.\n\nExample: page=`2` will return the second page of data records in the dataset."
+                    },
+                    {
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "in": "query",
+                        "name": "nestedPage",
+                        "description": "Controls pagination of nested (linked) records in the API response by specifying the page number. By default, the first page is returned; increment the page number to retrieve subsequent pages.\n\nExample: nestedPage=`2` will return the second page of nested data records in the dataset."
+                    },
+                    {
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "in": "query",
+                        "name": "pageSize",
+                        "description": "Sets a limit on the number of records returned in the API response. By default, all available records are returned, but this parameter allows you to control the quantity.\n\nExample: pageSize=`100` will limit the response to 100 records per page."
+                    },
+                    {
+                        "schema": {
+                            "type": "string",
+                            "enum": [
+                                "vwlqzzewrxfw6cvc"
+                            ]
+                        },
+                        "description": "Fetches records that are visible within a specific view. If the view has sorting enabled, the API returns records in the same order as displayed in the view. Specifying a **sort** query parameter overrides the view’s sorting configuration. Similarly, a **where** query parameter applies additional filtering on top of the view’s filters. By default, all fields—including those disabled in the view—are included in the response. Use the **fields** query parameter to include or exclude specific fields and customize the output.\n\n**Views:**\n* vwlqzzewrxfw6cvc - food_logs",
+                        "name": "viewId",
+                        "in": "query",
+                        "required": false
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "records": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/NutriClip_tg_bot_food_logsResponse"
+                                            }
+                                        },
+                                        "next": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Pagination token for next page"
+                                        },
+                                        "prev": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Pagination token for previous page"
+                                        },
+                                        "nestedNext": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Nested pagination token for next page"
+                                        },
+                                        "nestedPrev": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Nested pagination token for previous page"
+                                        }
+                                    },
+                                    "required": [
+                                        "records"
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "summary": "NutriClip_tg_bot_food_logs create",
+                "description": "Insert a new row in table by providing a key value pair object where key refers to the column alias. All the required fields should be included with payload excluding `autoincrement` and column with default value.",
+                "operationId": "nutriclip_tg_bot_food_logs-create",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "records": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/NutriClip_tg_bot_food_logsResponse"
+                                            }
+                                        }
+                                    },
+                                    "required": [
+                                        "records"
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "tags": [
+                    "NutriClip_tg_bot_food_logs"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "$ref": "#/components/schemas/NutriClip_tg_bot_food_logsRequest"
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "$ref": "#/components/schemas/NutriClip_tg_bot_food_logsRequest"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "summary": "NutriClip_tg_bot_food_logs update",
+                "operationId": "nutriclip_tg_bot_food_logs-update",
+                "description": "Partial update row in table by providing a key value pair object where key refers to the column alias. You need to only include columns which you want to update.",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "records": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/NutriClip_tg_bot_food_logsResponse"
+                                            }
+                                        }
+                                    },
+                                    "required": [
+                                        "records"
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "tags": [
+                    "NutriClip_tg_bot_food_logs"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "$ref": "#/components/schemas/NutriClip_tg_bot_food_logsUpdateRequest"
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "$ref": "#/components/schemas/NutriClip_tg_bot_food_logsUpdateRequest"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "summary": "NutriClip_tg_bot_food_logs delete",
+                "operationId": "nutriclip_tg_bot_food_logs-delete",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "tags": [
+                    "NutriClip_tg_bot_food_logs"
+                ],
+                "description": "Delete a row by using the **primary key** column value.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "$ref": "#/components/schemas/NutriClip_tg_bot_food_logsIdRequest"
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "$ref": "#/components/schemas/NutriClip_tg_bot_food_logsIdRequest"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v3/data/p6iywpukq1yiryf/mqhuz4edun8xpdc/records/{recordId}": {
+            "parameters": [
+                {
+                    "schema": {
+                        "type": "string"
+                    },
+                    "name": "recordId",
+                    "in": "path",
+                    "required": true,
+                    "example": 1,
+                    "description": "Primary key of the record you want to read."
+                },
+                {
+                    "schema": {
+                        "type": "string"
+                    },
+                    "in": "query",
+                    "name": "fields",
+                    "description": "Specify fields to include in the API response. String representing stringified JSON array of field names or field ids. \n\nExample: fields=`[\"field1\"]` or fields=`[\"field1\",\"field2\"]` will include only field1 (with field2 on 2nd example) in the response."
+                }
+            ],
+            "get": {
+                "summary": "NutriClip_tg_bot_food_logs read",
+                "description": "Read a row data by using the **primary key** column value.",
+                "operationId": "nutriclip_tg_bot_food_logs-read",
+                "tags": [
+                    "NutriClip_tg_bot_food_logs"
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/NutriClip_tg_bot_food_logsResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v3/data/p6iywpukq1yiryf/mqhuz4edun8xpdc/count": {
+            "parameters": [
+                {
+                    "schema": {
+                        "type": "string",
+                        "enum": [
+                            "vwlqzzewrxfw6cvc"
+                        ]
+                    },
+                    "description": "Fetches records that are visible within a specific view. If the view has sorting enabled, the API returns records in the same order as displayed in the view. Specifying a **sort** query parameter overrides the view’s sorting configuration. Similarly, a **where** query parameter applies additional filtering on top of the view’s filters. By default, all fields—including those disabled in the view—are included in the response. Use the **fields** query parameter to include or exclude specific fields and customize the output.\n\n**Views:**\n* vwlqzzewrxfw6cvc - food_logs",
+                    "name": "viewId",
+                    "in": "query",
+                    "required": false
+                }
+            ],
+            "get": {
+                "summary": "NutriClip_tg_bot_food_logs count",
+                "operationId": "nutriclip_tg_bot_food_logs-count",
+                "description": "Get rows count of a table by applying optional filters.",
+                "tags": [
+                    "NutriClip_tg_bot_food_logs"
+                ],
+                "parameters": [
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "where",
+                        "description": "Enables defining conditions to filter records in the API response. Multiple conditions can be combined using the logical operators 'and' or 'or'. Each condition consists of three components: a field name, a comparison operator, and a value.\n\nExample: where=`(field1,eq,value1)~and(field2,eq,value2)` will filter records where field1 equals value1 AND field2 equals value2.\n\nIf **viewId** parameter is also included, these filters are applied on top of the view’s predefined filter configuration. \n\n**NOTE**: Maintain the specified format; do not include spaces between components of a condition. For further information on this please see [the documentation](https://nocodb.com/docs/product-docs/developer-resources/rest-apis#v3-where-query-parameter)"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "count": {
+                                            "type": "number"
+                                        }
+                                    }
+                                },
+                                "examples": {
+                                    "Example 1": {
+                                        "value": {
+                                            "count": 3
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                }
+            }
+        },
+        "/api/v3/data/p6iywpukq1yiryf/mqhuz4edun8xpdc/links/{linkFieldId}/{recordId}": {
+            "parameters": [
+                {
+                    "schema": {
+                        "type": "string",
+                        "enum": [
+                            "ciru4l8rjn8ak0p"
+                        ]
+                    },
+                    "name": "linkFieldId",
+                    "in": "path",
+                    "required": true,
+                    "description": "**Links Field Identifier** corresponding to the relation field **Links** or **LinkToAnotherRecord** established between tables.\n\nLink Columns:\n* ciru4l8rjn8ak0p - users"
+                },
+                {
+                    "schema": {
+                        "type": "string"
+                    },
+                    "name": "recordId",
+                    "in": "path",
+                    "required": true,
+                    "example": 1,
+                    "description": "Primary key of the record you want to read."
+                }
+            ],
+            "get": {
+                "summary": "Link Records list",
+                "operationId": "nutriclip_tg_bot_food_logs-nested-list",
+                "description": "This API endpoint allows you to retrieve list of linked records for a specific `Link field` and `Record ID`. The response is an array of objects containing Primary Key and its corresponding display value.",
+                "tags": [
+                    "NutriClip_tg_bot_food_logs"
+                ],
+                "parameters": [
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "fields",
+                        "description": "Specify fields to include in the API response. String representing stringified JSON array of field names or field ids. \n\nExample: fields=`[\"field1\"]` or fields=`[\"field1\",\"field2\"]` will include only field1 (with field2 on 2nd example) in the response."
+                    },
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "sort",
+                        "description": "Allows you to specify the fields by which you want to sort the records in your API response. A string representing stringified JSON array of objects. Each object must have a 'field' property specifying the field name and an optional 'direction' property with value 'asc' or 'desc'. If **viewId** query parameter is also included, the sort included here will take precedence over any sorting configuration defined in the view. \n\nExample: sort=`[{\"direction\":\"asc\", \"field\":\"field1\"}]` will sort records in ascending order based on field1."
+                    },
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "where",
+                        "description": "Enables defining conditions to filter records in the API response. Multiple conditions can be combined using the logical operators 'and' or 'or'. Each condition consists of three components: a field name, a comparison operator, and a value.\n\nExample: where=`(field1,eq,value1)~and(field2,eq,value2)` will filter records where field1 equals value1 AND field2 equals value2.\n\nIf **viewId** parameter is also included, these filters are applied on top of the view’s predefined filter configuration. \n\n**NOTE**: Maintain the specified format; do not include spaces between components of a condition. For further information on this please see [the documentation](https://nocodb.com/docs/product-docs/developer-resources/rest-apis#v3-where-query-parameter)"
+                    },
+                    {
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "in": "query",
+                        "name": "page",
+                        "description": "Controls pagination of the API response by specifying the page number to retrieve. By default, the first page is returned. Increment the page number to retrieve subsequent pages.\n\nExample: page=`2` will return the second page of data records in the dataset."
+                    },
+                    {
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "in": "query",
+                        "name": "pageSize",
+                        "description": "Sets a limit on the number of records returned in the API response. By default, all available records are returned, but this parameter allows you to control the quantity.\n\nExample: pageSize=`100` will limit the response to 100 records per page."
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "records": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/NutriClip_tg_bot_food_logsResponse"
+                                            }
+                                        },
+                                        "next": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Pagination token for next page"
+                                        },
+                                        "prev": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Pagination token for previous page"
+                                        },
+                                        "nestedNext": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Nested pagination token for next page"
+                                        },
+                                        "nestedPrev": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Nested pagination token for previous page"
+                                        }
+                                    },
+                                    "required": [
+                                        "records"
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                }
+            },
+            "post": {
+                "summary": "Link Records",
+                "operationId": "nutriclip_tg_bot_food_logs-nested-link",
+                "responses": {
+                    "200": {
+                        "description": "Records successfully linked",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {
+                                            "type": "boolean",
+                                            "description": "Indicates whether the linking operation was successful"
+                                        }
+                                    },
+                                    "required": [
+                                        "success"
+                                    ]
+                                },
+                                "examples": {
+                                    "Success Response": {
+                                        "value": {
+                                            "success": true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "tags": [
+                    "NutriClip_tg_bot_food_logs"
+                ],
+                "requestBody": {
+                    "required": true,
+                    "description": "Record objects to be linked, each containing an id field",
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {
+                                                "type": "string",
+                                                "description": "Unique identifier for the record"
+                                            }
+                                        },
+                                        "required": [
+                                            "id"
+                                        ]
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "id": {
+                                                    "type": "string",
+                                                    "description": "Unique identifier for the record"
+                                                }
+                                            },
+                                            "required": [
+                                                "id"
+                                            ]
+                                        }
+                                    }
+                                ]
+                            },
+                            "examples": {
+                                "Single Record": {
+                                    "summary": "Link a single record",
+                                    "value": {
+                                        "id": "22"
+                                    }
+                                },
+                                "Multiple Records": {
+                                    "summary": "Link multiple records",
+                                    "value": [
+                                        {
+                                            "id": "43"
+                                        },
+                                        {
+                                            "id": "44"
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                },
+                "description": "This API endpoint allows you to link records to a specific `Link field` and `Record ID`. The request payload is an array of record-ids from the adjacent table for linking purposes. Note that any existing links, if present, will be unaffected during this operation.",
+                "parameters": [
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "name": "recordId",
+                        "in": "path",
+                        "required": true,
+                        "example": 1,
+                        "description": "Primary key of the record you want to read."
+                    }
+                ]
+            },
+            "delete": {
+                "summary": "Unlink Records",
+                "operationId": "nutriclip_tg_bot_food_logs-nested-unlink",
+                "responses": {
+                    "200": {
+                        "description": "Records successfully unlinked",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {
+                                            "type": "boolean",
+                                            "description": "Indicates whether the unlink operation was successful"
+                                        }
+                                    },
+                                    "required": [
+                                        "success"
+                                    ]
+                                },
+                                "examples": {
+                                    "Success Response": {
+                                        "value": {
+                                            "success": true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "tags": [
+                    "NutriClip_tg_bot_food_logs"
+                ],
+                "requestBody": {
+                    "required": true,
+                    "description": "Record objects to be unlinked, each containing an id field",
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {
+                                                "type": "string",
+                                                "description": "Unique identifier for the record"
+                                            }
+                                        },
+                                        "required": [
+                                            "id"
+                                        ]
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "id": {
+                                                    "type": "string",
+                                                    "description": "Unique identifier for the record"
+                                                }
+                                            },
+                                            "required": [
+                                                "id"
+                                            ]
+                                        }
+                                    }
+                                ]
+                            },
+                            "examples": {
+                                "Single Record": {
+                                    "summary": "Unlink a single record",
+                                    "value": {
+                                        "id": "22"
+                                    }
+                                },
+                                "Multiple Records": {
+                                    "summary": "Unlink multiple records",
+                                    "value": [
+                                        {
+                                            "id": "43"
+                                        },
+                                        {
+                                            "id": "44"
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                },
+                "description": "This API endpoint allows you to unlink records from a specific `Link field` and `Record ID`. The request payload is an array of record-ids from the adjacent table for unlinking purposes. Note that, \n- duplicated record-ids will be ignored.\n- non-existent record-ids will be ignored.",
+                "parameters": [
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "name": "recordId",
+                        "in": "path",
+                        "required": true,
+                        "example": 1,
+                        "description": "Primary key of the record you want to read."
+                    }
+                ]
+            }
+        },
+        "/api/v3/data/p6iywpukq1yiryf/m04n35tamrsu1wn/records": {
+            "get": {
+                "summary": "NutriClip_tg_bot_reminders list",
+                "operationId": "nutriclip_tg_bot_reminders-db-table-row-list",
+                "description": "List all rows from **NutriClip_tg_bot_reminders** table. Fields to be included in the response can be refined through query parameters. Additionally, filtering, sorting, and pagination can be applied to the results.",
+                "tags": [
+                    "NutriClip_tg_bot_reminders"
+                ],
+                "parameters": [
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "fields",
+                        "description": "Specify fields to include in the API response. String representing stringified JSON array of field names or field ids. \n\nExample: fields=`[\"field1\"]` or fields=`[\"field1\",\"field2\"]` will include only field1 (with field2 on 2nd example) in the response."
+                    },
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "sort",
+                        "description": "Allows you to specify the fields by which you want to sort the records in your API response. A string representing stringified JSON array of objects. Each object must have a 'field' property specifying the field name and an optional 'direction' property with value 'asc' or 'desc'. If **viewId** query parameter is also included, the sort included here will take precedence over any sorting configuration defined in the view. \n\nExample: sort=`[{\"direction\":\"asc\", \"field\":\"field1\"}]` will sort records in ascending order based on field1."
+                    },
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "where",
+                        "description": "Enables defining conditions to filter records in the API response. Multiple conditions can be combined using the logical operators 'and' or 'or'. Each condition consists of three components: a field name, a comparison operator, and a value.\n\nExample: where=`(field1,eq,value1)~and(field2,eq,value2)` will filter records where field1 equals value1 AND field2 equals value2.\n\nIf **viewId** parameter is also included, these filters are applied on top of the view’s predefined filter configuration. \n\n**NOTE**: Maintain the specified format; do not include spaces between components of a condition. For further information on this please see [the documentation](https://nocodb.com/docs/product-docs/developer-resources/rest-apis#v3-where-query-parameter)"
+                    },
+                    {
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "in": "query",
+                        "name": "page",
+                        "description": "Controls pagination of the API response by specifying the page number to retrieve. By default, the first page is returned. Increment the page number to retrieve subsequent pages.\n\nExample: page=`2` will return the second page of data records in the dataset."
+                    },
+                    {
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "in": "query",
+                        "name": "nestedPage",
+                        "description": "Controls pagination of nested (linked) records in the API response by specifying the page number. By default, the first page is returned; increment the page number to retrieve subsequent pages.\n\nExample: nestedPage=`2` will return the second page of nested data records in the dataset."
+                    },
+                    {
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "in": "query",
+                        "name": "pageSize",
+                        "description": "Sets a limit on the number of records returned in the API response. By default, all available records are returned, but this parameter allows you to control the quantity.\n\nExample: pageSize=`100` will limit the response to 100 records per page."
+                    },
+                    {
+                        "schema": {
+                            "type": "string",
+                            "enum": [
+                                "vwm4af0gy37aqkbr"
+                            ]
+                        },
+                        "description": "Fetches records that are visible within a specific view. If the view has sorting enabled, the API returns records in the same order as displayed in the view. Specifying a **sort** query parameter overrides the view’s sorting configuration. Similarly, a **where** query parameter applies additional filtering on top of the view’s filters. By default, all fields—including those disabled in the view—are included in the response. Use the **fields** query parameter to include or exclude specific fields and customize the output.\n\n**Views:**\n* vwm4af0gy37aqkbr - reminders",
+                        "name": "viewId",
+                        "in": "query",
+                        "required": false
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "records": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/NutriClip_tg_bot_remindersResponse"
+                                            }
+                                        },
+                                        "next": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Pagination token for next page"
+                                        },
+                                        "prev": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Pagination token for previous page"
+                                        },
+                                        "nestedNext": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Nested pagination token for next page"
+                                        },
+                                        "nestedPrev": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Nested pagination token for previous page"
+                                        }
+                                    },
+                                    "required": [
+                                        "records"
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "summary": "NutriClip_tg_bot_reminders create",
+                "description": "Insert a new row in table by providing a key value pair object where key refers to the column alias. All the required fields should be included with payload excluding `autoincrement` and column with default value.",
+                "operationId": "nutriclip_tg_bot_reminders-create",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "records": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/NutriClip_tg_bot_remindersResponse"
+                                            }
+                                        }
+                                    },
+                                    "required": [
+                                        "records"
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "tags": [
+                    "NutriClip_tg_bot_reminders"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "$ref": "#/components/schemas/NutriClip_tg_bot_remindersRequest"
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "$ref": "#/components/schemas/NutriClip_tg_bot_remindersRequest"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "summary": "NutriClip_tg_bot_reminders update",
+                "operationId": "nutriclip_tg_bot_reminders-update",
+                "description": "Partial update row in table by providing a key value pair object where key refers to the column alias. You need to only include columns which you want to update.",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "records": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/NutriClip_tg_bot_remindersResponse"
+                                            }
+                                        }
+                                    },
+                                    "required": [
+                                        "records"
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "tags": [
+                    "NutriClip_tg_bot_reminders"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "$ref": "#/components/schemas/NutriClip_tg_bot_remindersUpdateRequest"
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "$ref": "#/components/schemas/NutriClip_tg_bot_remindersUpdateRequest"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "summary": "NutriClip_tg_bot_reminders delete",
+                "operationId": "nutriclip_tg_bot_reminders-delete",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "tags": [
+                    "NutriClip_tg_bot_reminders"
+                ],
+                "description": "Delete a row by using the **primary key** column value.",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "$ref": "#/components/schemas/NutriClip_tg_bot_remindersIdRequest"
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "$ref": "#/components/schemas/NutriClip_tg_bot_remindersIdRequest"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v3/data/p6iywpukq1yiryf/m04n35tamrsu1wn/records/{recordId}": {
+            "parameters": [
+                {
+                    "schema": {
+                        "type": "string"
+                    },
+                    "name": "recordId",
+                    "in": "path",
+                    "required": true,
+                    "example": 1,
+                    "description": "Primary key of the record you want to read."
+                },
+                {
+                    "schema": {
+                        "type": "string"
+                    },
+                    "in": "query",
+                    "name": "fields",
+                    "description": "Specify fields to include in the API response. String representing stringified JSON array of field names or field ids. \n\nExample: fields=`[\"field1\"]` or fields=`[\"field1\",\"field2\"]` will include only field1 (with field2 on 2nd example) in the response."
+                }
+            ],
+            "get": {
+                "summary": "NutriClip_tg_bot_reminders read",
+                "description": "Read a row data by using the **primary key** column value.",
+                "operationId": "nutriclip_tg_bot_reminders-read",
+                "tags": [
+                    "NutriClip_tg_bot_reminders"
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/NutriClip_tg_bot_remindersResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v3/data/p6iywpukq1yiryf/m04n35tamrsu1wn/count": {
+            "parameters": [
+                {
+                    "schema": {
+                        "type": "string",
+                        "enum": [
+                            "vwm4af0gy37aqkbr"
+                        ]
+                    },
+                    "description": "Fetches records that are visible within a specific view. If the view has sorting enabled, the API returns records in the same order as displayed in the view. Specifying a **sort** query parameter overrides the view’s sorting configuration. Similarly, a **where** query parameter applies additional filtering on top of the view’s filters. By default, all fields—including those disabled in the view—are included in the response. Use the **fields** query parameter to include or exclude specific fields and customize the output.\n\n**Views:**\n* vwm4af0gy37aqkbr - reminders",
+                    "name": "viewId",
+                    "in": "query",
+                    "required": false
+                }
+            ],
+            "get": {
+                "summary": "NutriClip_tg_bot_reminders count",
+                "operationId": "nutriclip_tg_bot_reminders-count",
+                "description": "Get rows count of a table by applying optional filters.",
+                "tags": [
+                    "NutriClip_tg_bot_reminders"
+                ],
+                "parameters": [
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "where",
+                        "description": "Enables defining conditions to filter records in the API response. Multiple conditions can be combined using the logical operators 'and' or 'or'. Each condition consists of three components: a field name, a comparison operator, and a value.\n\nExample: where=`(field1,eq,value1)~and(field2,eq,value2)` will filter records where field1 equals value1 AND field2 equals value2.\n\nIf **viewId** parameter is also included, these filters are applied on top of the view’s predefined filter configuration. \n\n**NOTE**: Maintain the specified format; do not include spaces between components of a condition. For further information on this please see [the documentation](https://nocodb.com/docs/product-docs/developer-resources/rest-apis#v3-where-query-parameter)"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "count": {
+                                            "type": "number"
+                                        }
+                                    }
+                                },
+                                "examples": {
+                                    "Example 1": {
+                                        "value": {
+                                            "count": 3
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                }
+            }
+        },
+        "/api/v3/data/p6iywpukq1yiryf/m04n35tamrsu1wn/links/{linkFieldId}/{recordId}": {
+            "parameters": [
+                {
+                    "schema": {
+                        "type": "string",
+                        "enum": [
+                            "cii2y6a4f443637"
+                        ]
+                    },
+                    "name": "linkFieldId",
+                    "in": "path",
+                    "required": true,
+                    "description": "**Links Field Identifier** corresponding to the relation field **Links** or **LinkToAnotherRecord** established between tables.\n\nLink Columns:\n* cii2y6a4f443637 - users"
+                },
+                {
+                    "schema": {
+                        "type": "string"
+                    },
+                    "name": "recordId",
+                    "in": "path",
+                    "required": true,
+                    "example": 1,
+                    "description": "Primary key of the record you want to read."
+                }
+            ],
+            "get": {
+                "summary": "Link Records list",
+                "operationId": "nutriclip_tg_bot_reminders-nested-list",
+                "description": "This API endpoint allows you to retrieve list of linked records for a specific `Link field` and `Record ID`. The response is an array of objects containing Primary Key and its corresponding display value.",
+                "tags": [
+                    "NutriClip_tg_bot_reminders"
+                ],
+                "parameters": [
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "fields",
+                        "description": "Specify fields to include in the API response. String representing stringified JSON array of field names or field ids. \n\nExample: fields=`[\"field1\"]` or fields=`[\"field1\",\"field2\"]` will include only field1 (with field2 on 2nd example) in the response."
+                    },
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "sort",
+                        "description": "Allows you to specify the fields by which you want to sort the records in your API response. A string representing stringified JSON array of objects. Each object must have a 'field' property specifying the field name and an optional 'direction' property with value 'asc' or 'desc'. If **viewId** query parameter is also included, the sort included here will take precedence over any sorting configuration defined in the view. \n\nExample: sort=`[{\"direction\":\"asc\", \"field\":\"field1\"}]` will sort records in ascending order based on field1."
+                    },
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "in": "query",
+                        "name": "where",
+                        "description": "Enables defining conditions to filter records in the API response. Multiple conditions can be combined using the logical operators 'and' or 'or'. Each condition consists of three components: a field name, a comparison operator, and a value.\n\nExample: where=`(field1,eq,value1)~and(field2,eq,value2)` will filter records where field1 equals value1 AND field2 equals value2.\n\nIf **viewId** parameter is also included, these filters are applied on top of the view’s predefined filter configuration. \n\n**NOTE**: Maintain the specified format; do not include spaces between components of a condition. For further information on this please see [the documentation](https://nocodb.com/docs/product-docs/developer-resources/rest-apis#v3-where-query-parameter)"
+                    },
+                    {
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "in": "query",
+                        "name": "page",
+                        "description": "Controls pagination of the API response by specifying the page number to retrieve. By default, the first page is returned. Increment the page number to retrieve subsequent pages.\n\nExample: page=`2` will return the second page of data records in the dataset."
+                    },
+                    {
+                        "schema": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "in": "query",
+                        "name": "pageSize",
+                        "description": "Sets a limit on the number of records returned in the API response. By default, all available records are returned, but this parameter allows you to control the quantity.\n\nExample: pageSize=`100` will limit the response to 100 records per page."
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "records": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/components/schemas/NutriClip_tg_bot_remindersResponse"
+                                            }
+                                        },
+                                        "next": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Pagination token for next page"
+                                        },
+                                        "prev": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Pagination token for previous page"
+                                        },
+                                        "nestedNext": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Nested pagination token for next page"
+                                        },
+                                        "nestedPrev": {
+                                            "type": [
+                                                "string",
+                                                "null"
+                                            ],
+                                            "description": "Nested pagination token for previous page"
+                                        }
+                                    },
+                                    "required": [
+                                        "records"
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                }
+            },
+            "post": {
+                "summary": "Link Records",
+                "operationId": "nutriclip_tg_bot_reminders-nested-link",
+                "responses": {
+                    "200": {
+                        "description": "Records successfully linked",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {
+                                            "type": "boolean",
+                                            "description": "Indicates whether the linking operation was successful"
+                                        }
+                                    },
+                                    "required": [
+                                        "success"
+                                    ]
+                                },
+                                "examples": {
+                                    "Success Response": {
+                                        "value": {
+                                            "success": true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "tags": [
+                    "NutriClip_tg_bot_reminders"
+                ],
+                "requestBody": {
+                    "required": true,
+                    "description": "Record objects to be linked, each containing an id field",
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {
+                                                "type": "string",
+                                                "description": "Unique identifier for the record"
+                                            }
+                                        },
+                                        "required": [
+                                            "id"
+                                        ]
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "id": {
+                                                    "type": "string",
+                                                    "description": "Unique identifier for the record"
+                                                }
+                                            },
+                                            "required": [
+                                                "id"
+                                            ]
+                                        }
+                                    }
+                                ]
+                            },
+                            "examples": {
+                                "Single Record": {
+                                    "summary": "Link a single record",
+                                    "value": {
+                                        "id": "22"
+                                    }
+                                },
+                                "Multiple Records": {
+                                    "summary": "Link multiple records",
+                                    "value": [
+                                        {
+                                            "id": "43"
+                                        },
+                                        {
+                                            "id": "44"
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                },
+                "description": "This API endpoint allows you to link records to a specific `Link field` and `Record ID`. The request payload is an array of record-ids from the adjacent table for linking purposes. Note that any existing links, if present, will be unaffected during this operation.",
+                "parameters": [
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "name": "recordId",
+                        "in": "path",
+                        "required": true,
+                        "example": 1,
+                        "description": "Primary key of the record you want to read."
+                    }
+                ]
+            },
+            "delete": {
+                "summary": "Unlink Records",
+                "operationId": "nutriclip_tg_bot_reminders-nested-unlink",
+                "responses": {
+                    "200": {
+                        "description": "Records successfully unlinked",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {
+                                            "type": "boolean",
+                                            "description": "Indicates whether the unlink operation was successful"
+                                        }
+                                    },
+                                    "required": [
+                                        "success"
+                                    ]
+                                },
+                                "examples": {
+                                    "Success Response": {
+                                        "value": {
+                                            "success": true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "$ref": "#/components/responses/BadRequest"
+                    }
+                },
+                "tags": [
+                    "NutriClip_tg_bot_reminders"
+                ],
+                "requestBody": {
+                    "required": true,
+                    "description": "Record objects to be unlinked, each containing an id field",
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {
+                                                "type": "string",
+                                                "description": "Unique identifier for the record"
+                                            }
+                                        },
+                                        "required": [
+                                            "id"
+                                        ]
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "id": {
+                                                    "type": "string",
+                                                    "description": "Unique identifier for the record"
+                                                }
+                                            },
+                                            "required": [
+                                                "id"
+                                            ]
+                                        }
+                                    }
+                                ]
+                            },
+                            "examples": {
+                                "Single Record": {
+                                    "summary": "Unlink a single record",
+                                    "value": {
+                                        "id": "22"
+                                    }
+                                },
+                                "Multiple Records": {
+                                    "summary": "Unlink multiple records",
+                                    "value": [
+                                        {
+                                            "id": "43"
+                                        },
+                                        {
+                                            "id": "44"
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                },
+                "description": "This API endpoint allows you to unlink records from a specific `Link field` and `Record ID`. The request payload is an array of record-ids from the adjacent table for unlinking purposes. Note that, \n- duplicated record-ids will be ignored.\n- non-existent record-ids will be ignored.",
+                "parameters": [
+                    {
+                        "schema": {
+                            "type": "string"
+                        },
+                        "name": "recordId",
+                        "in": "path",
+                        "required": true,
+                        "example": 1,
+                        "description": "Primary key of the record you want to read."
+                    }
+                ]
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "Attachment": {
+                "title": "Attachment",
+                "type": "object",
+                "properties": {
+                    "mimetype": {
+                        "type": "string"
+                    },
+                    "size": {
+                        "type": "integer"
+                    },
+                    "title": {
+                        "type": "string"
+                    },
+                    "url": {
+                        "type": "string"
+                    },
+                    "icon": {
+                        "type": "string"
+                    }
+                }
+            },
+            "NutriClip_tg_bot_usersResponse": {
+                "title": "NutriClip_tg_bot_users Response",
+                "type": "object",
+                "description": "",
+                "x-internal": false,
+                "properties": {
+                    "id": {
+                        "oneOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "number"
+                            }
+                        ],
+                        "description": "Record identifier (primary key value)"
+                    },
+                    "id_fields": {
+                        "type": "object",
+                        "description": "Individual primary key field values as object",
+                        "properties": {
+                            "id": {
+                                "type": "integer",
+                                "nullable": false
+                            }
+                        }
+                    },
+                    "fields": {
+                        "type": "object",
+                        "description": "Record fields data (excluding primary key)",
+                        "properties": {
+                            "first_name": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "gender": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "age": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "height": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "weight": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "activity_level": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "goal": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "daily_calories": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "timezone": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "day_change_hour": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "last_active_at": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "created_at": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "food_logs": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "oneOf": [
+                                                {
+                                                    "type": "string"
+                                                },
+                                                {
+                                                    "type": "number"
+                                                }
+                                            ],
+                                            "description": "Record identifier for linking"
+                                        }
+                                    },
+                                    "required": [
+                                        "id"
+                                    ]
+                                }
+                            },
+                            "reminders": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "oneOf": [
+                                                {
+                                                    "type": "string"
+                                                },
+                                                {
+                                                    "type": "number"
+                                                }
+                                            ],
+                                            "description": "Record identifier for linking"
+                                        }
+                                    },
+                                    "required": [
+                                        "id"
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                },
+                "required": [
+                    "id"
+                ]
+            },
+            "NutriClip_tg_bot_usersRequest": {
+                "title": "NutriClip_tg_bot_users Request",
+                "type": "object",
+                "description": "",
+                "x-internal": false,
+                "properties": {
+                    "fields": {
+                        "type": "object",
+                        "description": "Record fields data to be created/updated",
+                        "properties": {
+                            "id": {
+                                "type": "integer",
+                                "nullable": false
+                            },
+                            "first_name": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "gender": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "age": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "height": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "weight": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "activity_level": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "goal": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "daily_calories": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "timezone": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "day_change_hour": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "last_active_at": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "created_at": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "food_logs": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "oneOf": [
+                                                {
+                                                    "type": "string"
+                                                },
+                                                {
+                                                    "type": "number"
+                                                }
+                                            ],
+                                            "description": "Record identifier for linking"
+                                        }
+                                    },
+                                    "required": [
+                                        "id"
+                                    ]
+                                }
+                            },
+                            "reminders": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "oneOf": [
+                                                {
+                                                    "type": "string"
+                                                },
+                                                {
+                                                    "type": "number"
+                                                }
+                                            ],
+                                            "description": "Record identifier for linking"
+                                        }
+                                    },
+                                    "required": [
+                                        "id"
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                },
+                "required": [
+                    "fields"
+                ]
+            },
+            "NutriClip_tg_bot_usersUpdateRequest": {
+                "title": "NutriClip_tg_bot_users Update Request",
+                "type": "object",
+                "description": "",
+                "x-internal": false,
+                "properties": {
+                    "id": {
+                        "oneOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "number"
+                            }
+                        ],
+                        "description": "Record identifier (primary key value) for the record to be updated"
+                    },
+                    "fields": {
+                        "type": "object",
+                        "description": "Record fields data to be updated",
+                        "properties": {
+                            "id": {
+                                "type": "integer",
+                                "nullable": false
+                            },
+                            "first_name": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "gender": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "age": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "height": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "weight": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "activity_level": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "goal": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "daily_calories": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "timezone": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "day_change_hour": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "last_active_at": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "created_at": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "food_logs": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "oneOf": [
+                                                {
+                                                    "type": "string"
+                                                },
+                                                {
+                                                    "type": "number"
+                                                }
+                                            ],
+                                            "description": "Record identifier for linking"
+                                        }
+                                    },
+                                    "required": [
+                                        "id"
+                                    ]
+                                }
+                            },
+                            "reminders": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {
+                                            "oneOf": [
+                                                {
+                                                    "type": "string"
+                                                },
+                                                {
+                                                    "type": "number"
+                                                }
+                                            ],
+                                            "description": "Record identifier for linking"
+                                        }
+                                    },
+                                    "required": [
+                                        "id"
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                },
+                "required": [
+                    "id",
+                    "fields"
+                ]
+            },
+            "NutriClip_tg_bot_usersIdRequest": {
+                "title": "NutriClip_tg_bot_users Id Request",
+                "type": "object",
+                "description": "",
+                "x-internal": false,
+                "properties": {
+                    "id": {
+                        "oneOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "number"
+                            }
+                        ],
+                        "description": "Record identifier (primary key value) for the record to be deleted"
+                    }
+                },
+                "required": [
+                    "id"
+                ]
+            },
+            "NutriClip_tg_bot_food_logsResponse": {
+                "title": "NutriClip_tg_bot_food_logs Response",
+                "type": "object",
+                "description": "",
+                "x-internal": false,
+                "properties": {
+                    "id": {
+                        "oneOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "number"
+                            }
+                        ],
+                        "description": "Record identifier (primary key value)"
+                    },
+                    "id_fields": {
+                        "type": "object",
+                        "description": "Individual primary key field values as object",
+                        "properties": {
+                            "id": {
+                                "type": "integer",
+                                "nullable": false
+                            }
+                        }
+                    },
+                    "fields": {
+                        "type": "object",
+                        "description": "Record fields data (excluding primary key)",
+                        "properties": {
+                            "title": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "calories": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "proteins": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "fats": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "carbs": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "portion_g": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "logged_date": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "created_at": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "details_json": {
+                                "type": [
+                                    "object",
+                                    "null"
+                                ]
+                            },
+                            "users": {
+                                "type": [
+                                    "object",
+                                    "null"
+                                ],
+                                "properties": {
+                                    "id": {
+                                        "oneOf": [
+                                            {
+                                                "type": "string"
+                                            },
+                                            {
+                                                "type": "number"
+                                            }
+                                        ],
+                                        "description": "Record identifier for linking"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "required": [
+                    "id"
+                ]
+            },
+            "NutriClip_tg_bot_food_logsRequest": {
+                "title": "NutriClip_tg_bot_food_logs Request",
+                "type": "object",
+                "description": "",
+                "x-internal": false,
+                "properties": {
+                    "fields": {
+                        "type": "object",
+                        "description": "Record fields data to be created/updated",
+                        "properties": {
+                            "title": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "calories": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "proteins": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "fats": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "carbs": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "portion_g": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "logged_date": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "created_at": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "details_json": {
+                                "type": [
+                                    "object",
+                                    "null"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "required": [
+                    "fields"
+                ]
+            },
+            "NutriClip_tg_bot_food_logsUpdateRequest": {
+                "title": "NutriClip_tg_bot_food_logs Update Request",
+                "type": "object",
+                "description": "",
+                "x-internal": false,
+                "properties": {
+                    "id": {
+                        "oneOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "number"
+                            }
+                        ],
+                        "description": "Record identifier (primary key value) for the record to be updated"
+                    },
+                    "fields": {
+                        "type": "object",
+                        "description": "Record fields data to be updated",
+                        "properties": {
+                            "title": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "calories": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "proteins": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "fats": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "carbs": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "portion_g": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ],
+                                "format": "double"
+                            },
+                            "logged_date": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "created_at": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "details_json": {
+                                "type": [
+                                    "object",
+                                    "null"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "required": [
+                    "id",
+                    "fields"
+                ]
+            },
+            "NutriClip_tg_bot_food_logsIdRequest": {
+                "title": "NutriClip_tg_bot_food_logs Id Request",
+                "type": "object",
+                "description": "",
+                "x-internal": false,
+                "properties": {
+                    "id": {
+                        "oneOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "number"
+                            }
+                        ],
+                        "description": "Record identifier (primary key value) for the record to be deleted"
+                    }
+                },
+                "required": [
+                    "id"
+                ]
+            },
+            "NutriClip_tg_bot_remindersResponse": {
+                "title": "NutriClip_tg_bot_reminders Response",
+                "type": "object",
+                "description": "",
+                "x-internal": false,
+                "properties": {
+                    "id": {
+                        "oneOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "number"
+                            }
+                        ],
+                        "description": "Record identifier (primary key value)"
+                    },
+                    "id_fields": {
+                        "type": "object",
+                        "description": "Individual primary key field values as object",
+                        "properties": {
+                            "id": {
+                                "type": "integer",
+                                "nullable": false
+                            }
+                        }
+                    },
+                    "fields": {
+                        "type": "object",
+                        "description": "Record fields data (excluding primary key)",
+                        "properties": {
+                            "title": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "time_start": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "time_end": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "min_calories": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "is_triggered_today": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ]
+                            },
+                            "is_active": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ]
+                            },
+                            "users": {
+                                "type": [
+                                    "object",
+                                    "null"
+                                ],
+                                "properties": {
+                                    "id": {
+                                        "oneOf": [
+                                            {
+                                                "type": "string"
+                                            },
+                                            {
+                                                "type": "number"
+                                            }
+                                        ],
+                                        "description": "Record identifier for linking"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "required": [
+                    "id"
+                ]
+            },
+            "NutriClip_tg_bot_remindersRequest": {
+                "title": "NutriClip_tg_bot_reminders Request",
+                "type": "object",
+                "description": "",
+                "x-internal": false,
+                "properties": {
+                    "fields": {
+                        "type": "object",
+                        "description": "Record fields data to be created/updated",
+                        "properties": {
+                            "title": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "time_start": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "time_end": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "min_calories": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "is_triggered_today": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ]
+                            },
+                            "is_active": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "required": [
+                    "fields"
+                ]
+            },
+            "NutriClip_tg_bot_remindersUpdateRequest": {
+                "title": "NutriClip_tg_bot_reminders Update Request",
+                "type": "object",
+                "description": "",
+                "x-internal": false,
+                "properties": {
+                    "id": {
+                        "oneOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "number"
+                            }
+                        ],
+                        "description": "Record identifier (primary key value) for the record to be updated"
+                    },
+                    "fields": {
+                        "type": "object",
+                        "description": "Record fields data to be updated",
+                        "properties": {
+                            "title": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "time_start": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "time_end": {
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "min_calories": {
+                                "type": [
+                                    "integer",
+                                    "null"
+                                ]
+                            },
+                            "is_triggered_today": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ]
+                            },
+                            "is_active": {
+                                "type": [
+                                    "boolean",
+                                    "null"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "required": [
+                    "id",
+                    "fields"
+                ]
+            },
+            "NutriClip_tg_bot_remindersIdRequest": {
+                "title": "NutriClip_tg_bot_reminders Id Request",
+                "type": "object",
+                "description": "",
+                "x-internal": false,
+                "properties": {
+                    "id": {
+                        "oneOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "number"
+                            }
+                        ],
+                        "description": "Record identifier (primary key value) for the record to be deleted"
+                    }
+                },
+                "required": [
+                    "id"
+                ]
+            }
+        },
+        "securitySchemes": {
+            "xcToken": {
+                "type": "apiKey",
+                "in": "header",
+                "name": "xc-token",
+                "description": "API token"
+            },
+            "bearerAuth": {
+                "name": "Authorization",
+                "type": "http",
+                "scheme": "bearer",
+                "description": "Bearer token authentication. Use 'Authorization: Bearer \u003Ctoken\u003E' header format. This is an alternative to the xc-token header."
+            }
+        },
+        "responses": {
+            "BadRequest": {
+                "description": "BadRequest",
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "msg": {
+                                    "type": "string",
+                                    "example": "BadRequest [Error]: \u003CERROR MESSAGE\u003E"
+                                }
+                            },
+                            "required": [
+                                "msg"
+                            ]
+                        },
+                        "examples": {
+                            "Example 1": {
+                                "value": {
+                                    "msg": "BadRequest [Error]: \u003CERROR MESSAGE\u003E"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "security": [
+        {
+            "xcToken": []
+        },
+        {
+            "bearerAuth": []
+        }
+    ]
+}
