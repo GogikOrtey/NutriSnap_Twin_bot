@@ -7,12 +7,13 @@ main.py — точка входа Telegram-бота NutriSnap (@nutrisnap_ultra_
 главное меню (дневник, распознать, настройки, напоминания, выгрузка) и /start.
 Распознавание еды — в food_recognition.py (отдельный Router).
 Первичный опрос — в initial_survey.py (флаг INITIAL_SURVEY_ENABLED).
+Обратная связь (баг / идея) — SMTP-письмо на FEEDBACK_TO_EMAIL.
 
 Как устроен файл
 ----------------
 1. Импорты, .env, константы кнопок, MenuFlow.
 2. Stub-хранилище и 🔰-хелперы (заглушки вместо SQL: users / food_logs / reminders).
-3. Форматтеры экранов и Reply/Inline-клавиатуры.
+3. SMTP обратной связи (send_feedback_email) + форматтеры / Reply-клавиатуры.
 4. UI-хелперы: Reply → новое сообщение; Inline дневника → edit; чистка «Выберите действие:».
 5. Router меню + хендлеры; /start → опрос (если флаг) или главное меню; on_food_saved → reminders.
 6. main() — старт polling.
@@ -22,9 +23,15 @@ from __future__ import annotations
 
 import asyncio
 import html
+import io
 import os
+import smtplib
 import time
 from datetime import datetime, timedelta
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -52,6 +59,13 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# SMTP для обратной связи (Yandex и др.). Письма → FEEDBACK_TO_EMAIL.
+FEEDBACK_TO_EMAIL = os.getenv("FEEDBACK_TO_EMAIL", "gog.ortey@yandex.ru")
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.yandex.ru")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
+SMTP_USER = os.getenv("SMTP_USER", "gog.ortey@yandex.ru")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 # Если True — /start всегда кидает на первичный опрос (для разработки UI опроса).
 # Позже: выключить и проверять в БД, прошёл ли пользователь опрос при первом запуске.
@@ -88,7 +102,9 @@ BTN_MONTH_60_90 = "3️⃣ От 60 до 90 дней назад"
 BTN_SET_DAY_HOUR = "🕓 Время смены суток"
 BTN_SET_REMINDERS = "🔔 Напоминания и Витамины"
 BTN_SET_EXPORT = "📤 Сделать выгрузку журнала"
-BTN_SET_FEEDBACK = "💬 Отправить отзыв"
+BTN_SET_FEEDBACK = "💬 Отправить отзыв или сообщить об ошибке"
+BTN_FEEDBACK_BUG = "🐞 Сообщить об ошибке"
+BTN_FEEDBACK_IDEA = "💡 Предложение по улучшению функционала"
 BTN_SET_PROFILE = "👤 Изменить данные профиля"
 BTN_UPDATE_PROFILE = "🔄 Обновить данные пользователя"
 BTN_SET_GOAL = "🎯 Изменить тип отслеживания"
@@ -188,6 +204,8 @@ MENU_BUTTON_TEXTS: frozenset[str] = frozenset(
         BTN_SET_REMINDERS,
         BTN_SET_EXPORT,
         BTN_SET_FEEDBACK,
+        BTN_FEEDBACK_BUG,
+        BTN_FEEDBACK_IDEA,
         BTN_SET_PROFILE,
         BTN_UPDATE_PROFILE,
         BTN_SET_GOAL,
@@ -418,14 +436,91 @@ def stub_set_profile(
     user["last_active_at"] = int(time.time())
 
 
-# 🔰 Заглушка отправки отзыва разработчику (вместо email/SMTP).
-# Используется флоу «Отправить отзыв».
-def stub_send_feedback(user_id: int, text: str, has_photo: bool) -> None:
-    # 🔰 В будущем: письмо/тикет. Сейчас — лог в консоль.
+# Подписи типов обратной связи для писем и UI.
+# Используется флоу отзыва / сообщения об ошибке.
+FEEDBACK_KIND_LABELS = {
+    "bug": "Сообщить об ошибке",
+    "idea": "Предложение по улучшению функционала",
+}
+
+
+# Синхронная отправка письма через SMTP (вызывается из to_thread).
+# Используется send_feedback_email.
+def _smtp_send_feedback(
+    *,
+    subject: str,
+    body: str,
+    photo_bytes: bytes | None,
+    photo_filename: str,
+) -> None:
+    msg = MIMEMultipart()
+    msg["From"] = SMTP_USER
+    msg["To"] = FEEDBACK_TO_EMAIL
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    if photo_bytes:
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(photo_bytes)
+        encoders.encode_base64(part)
+        part.add_header(
+            "Content-Disposition",
+            f'attachment; filename="{photo_filename}"',
+        )
+        msg.attach(part)
+
+    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30) as server:
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.sendmail(SMTP_USER, [FEEDBACK_TO_EMAIL], msg.as_string())
+
+
+# Отправка отзыва/багрепорта на почту разработчика (SMTP из .env).
+# Используется хендлерами MenuFlow.feedback_wait (текст / фото).
+async def send_feedback_email(
+    *,
+    user_id: int,
+    username: str | None,
+    kind: str,
+    text: str,
+    photo_bytes: bytes | None = None,
+) -> None:
+    if not SMTP_USER or not SMTP_PASSWORD:
+        raise RuntimeError(
+            "SMTP_USER / SMTP_PASSWORD не заданы в .env — письмо не отправлено"
+        )
+
+    kind_label = FEEDBACK_KIND_LABELS.get(kind, kind)
+    uname = f"@{username}" if username else "—"
+    subject = f"[NutriClick] {kind_label} — user {user_id}"
+    body = (
+        f"Тип: {kind_label}\n"
+        f"user_id: {user_id}\n"
+        f"username: {uname}\n"
+        f"\n"
+        f"Сообщение:\n"
+        f"{text or '(без текста)'}\n"
+    )
+    photo_filename = "screenshot.jpg" if photo_bytes else ""
+    await asyncio.to_thread(
+        _smtp_send_feedback,
+        subject=subject,
+        body=body,
+        photo_bytes=photo_bytes,
+        photo_filename=photo_filename,
+    )
     print(
-        f"🔰 feedback user_id={user_id} has_photo={has_photo} text={text!r}",
+        f"feedback sent kind={kind} user_id={user_id} "
+        f"has_photo={bool(photo_bytes)}",
         flush=True,
     )
+
+
+# Скачать фото Telegram в память (для вложения в письмо отзыва).
+# Используется on_feedback_photo.
+async def download_photo_bytes(bot: Bot, file_id: str) -> bytes:
+    buffer = io.BytesIO()
+    await bot.download(file_id, destination=buffer)
+    return buffer.getvalue()
 
 
 # 🔰 Список напоминаний пользователя (reminders), от новых к старым по id.
@@ -958,6 +1053,19 @@ def kb_settings() -> ReplyKeyboardMarkup:
     )
 
 
+# Reply-клавиатура выбора типа обратной связи.
+# Используется show_feedback_menu.
+def kb_feedback() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_FEEDBACK_BUG)],
+            [KeyboardButton(text=BTN_FEEDBACK_IDEA)],
+            [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
+        ],
+        resize_keyboard=True,
+    )
+
+
 # Reply-клавиатура раздела «Напоминания и Витамины».
 # Используется show_reminders.
 def kb_reminders() -> ReplyKeyboardMarkup:
@@ -1343,6 +1451,21 @@ async def show_settings(message: Message, state: FSMContext) -> None:
     await replace_ui(message, state, text, reply_markup=kb_settings())
 
 
+# Подменю обратной связи: ошибка или предложение.
+# Используется кнопкой BTN_SET_FEEDBACK и «Назад» из ввода отзыва.
+async def show_feedback_menu(message: Message, state: FSMContext) -> None:
+    await state.set_state(None)
+    await state.update_data(menu_screen="feedback", feedback_kind=None)
+    await replace_ui(
+        message,
+        state,
+        "💬 Обратная связь\n"
+        "\n"
+        "Выберите, что хотите отправить:",
+        reply_markup=kb_feedback(),
+    )
+
+
 # Подпись порога калорий напоминания для UI.
 # Используется списками и карточкой напоминания.
 def format_reminder_min_cal(min_calories: int) -> str:
@@ -1621,11 +1744,11 @@ async def on_back(message: Message, state: FSMContext) -> None:
     ):
         await show_profile(message, state)
         return
-    if current in (
-        MenuFlow.settings_day_hour.state,
-        MenuFlow.feedback_wait.state,
-    ):
+    if current == MenuFlow.settings_day_hour.state:
         await show_settings(message, state)
+        return
+    if current == MenuFlow.feedback_wait.state:
+        await show_feedback_menu(message, state)
         return
     if current == MenuFlow.reminders_add_window.state:
         await state.set_state(MenuFlow.reminders_add_title)
@@ -1697,6 +1820,9 @@ async def on_back(message: Message, state: FSMContext) -> None:
         await show_settings(message, state)
         return
     if screen == "reminders":
+        await show_settings(message, state)
+        return
+    if screen == "feedback":
         await show_settings(message, state)
         return
     await show_main_menu(message, state)
@@ -2102,49 +2228,111 @@ async def on_settings_export(message: Message, state: FSMContext) -> None:
     await show_export_menu(message, state)
 
 
-# Старт отзыва: ждём текст и/или фото.
+# Открыть подменю выбора типа обратной связи.
 @menu_router.message(F.text == BTN_SET_FEEDBACK)
 async def on_feedback_start(message: Message, state: FSMContext) -> None:
+    await show_feedback_menu(message, state)
+
+
+# Старт ввода: багрепорт — ждём текст и/или один скриншот.
+@menu_router.message(F.text == BTN_FEEDBACK_BUG)
+async def on_feedback_bug(message: Message, state: FSMContext) -> None:
     await state.set_state(MenuFlow.feedback_wait)
-    await state.update_data(menu_screen="settings")
+    await state.update_data(menu_screen="feedback", feedback_kind="bug")
     await replace_ui(
         message,
         state,
-        "💬 Обратная связь\n"
+        "🐞 Сообщить об ошибке\n"
         "\n"
-        "Напишите текст отзыва. Можно прикрепить фото "
-        "(подпись к фото тоже подойдёт).\n"
+        "Опишите проблему текстом. Можно прикрепить один скриншот "
+        "(удобнее всего — фото с подписью).\n"
+        "\n"
         "Чтобы отменить — «⬅️ Назад» или «🏠 Главное меню»",
         reply_markup=kb_nav_only(),
     )
 
 
-# Приём отзыва (текст, не кнопка меню) → 🔰 stub.
-@menu_router.message(MenuFlow.feedback_wait, F.text, ~F.text.in_(MENU_BUTTON_TEXTS))
-async def on_feedback_text(message: Message, state: FSMContext) -> None:
-    user_id = message.from_user.id if message.from_user else 0
-    text = (message.text or "").strip()
-    stub_send_feedback(user_id, text, has_photo=False)
-    await state.set_state(None)
+# Старт ввода: предложение по улучшению — ждём текст и/или один скриншот.
+@menu_router.message(F.text == BTN_FEEDBACK_IDEA)
+async def on_feedback_idea(message: Message, state: FSMContext) -> None:
+    await state.set_state(MenuFlow.feedback_wait)
+    await state.update_data(menu_screen="feedback", feedback_kind="idea")
     await replace_ui(
         message,
         state,
-        "✅ Спасибо! Отзыв передан разработчику (🔰 stub, без email)",
+        "💡 Предложение по улучшению функционала\n"
+        "\n"
+        "Напишите идею текстом. Можно прикрепить один скриншот "
+        "(удобнее всего — фото с подписью).\n"
+        "\n"
+        "Чтобы отменить — «⬅️ Назад» или «🏠 Главное меню»",
+        reply_markup=kb_nav_only(),
+    )
+
+
+# Приём текстового отзыва → письмо на FEEDBACK_TO_EMAIL.
+@menu_router.message(MenuFlow.feedback_wait, F.text, ~F.text.in_(MENU_BUTTON_TEXTS))
+async def on_feedback_text(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    kind = str(data.get("feedback_kind") or "idea")
+    user_id = message.from_user.id if message.from_user else 0
+    username = message.from_user.username if message.from_user else None
+    text = (message.text or "").strip()
+    try:
+        await send_feedback_email(
+            user_id=user_id,
+            username=username,
+            kind=kind,
+            text=text,
+        )
+    except Exception as exc:
+        print(f"feedback email error: {exc}", flush=True)
+        await message.answer(
+            "Не удалось отправить сообщение. Попробуйте позже "
+            "или напишите разработчику напрямую"
+        )
+        return
+    await state.set_state(None)
+    await state.update_data(menu_screen="settings", feedback_kind=None)
+    await replace_ui(
+        message,
+        state,
+        "✅ Спасибо! Сообщение отправлено разработчику",
         reply_markup=kb_settings(),
     )
 
 
-# Приём отзыва с фото (подпись опциональна) → 🔰 stub.
+# Приём отзыва с одним скриншотом (подпись опциональна) → письмо.
 @menu_router.message(MenuFlow.feedback_wait, F.photo)
 async def on_feedback_photo(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    kind = str(data.get("feedback_kind") or "idea")
     user_id = message.from_user.id if message.from_user else 0
+    username = message.from_user.username if message.from_user else None
     text = (message.caption or "").strip()
-    stub_send_feedback(user_id, text or "(без текста)", has_photo=True)
+    photo = message.photo[-1]
+    try:
+        photo_bytes = await download_photo_bytes(message.bot, photo.file_id)
+        await send_feedback_email(
+            user_id=user_id,
+            username=username,
+            kind=kind,
+            text=text,
+            photo_bytes=photo_bytes,
+        )
+    except Exception as exc:
+        print(f"feedback email error: {exc}", flush=True)
+        await message.answer(
+            "Не удалось отправить сообщение. Попробуйте позже "
+            "или напишите разработчику напрямую"
+        )
+        return
     await state.set_state(None)
+    await state.update_data(menu_screen="settings", feedback_kind=None)
     await replace_ui(
         message,
         state,
-        "✅ Спасибо! Отзыв передан разработчику (🔰 stub, без email)",
+        "✅ Спасибо! Сообщение отправлено разработчику",
         reply_markup=kb_settings(),
     )
 
@@ -2582,6 +2770,13 @@ async def main() -> None:
     if not GEMINI_API_KEY:
         raise SystemExit(
             "GEMINI_API_KEY не найден. Добавь его в .env и перезапусти скрипт."
+        )
+
+    if not SMTP_PASSWORD:
+        print(
+            "🟧 SMTP_PASSWORD не задан в .env — отправка отзывов на почту "
+            "не будет работать, пока не добавите пароль приложения Yandex",
+            flush=True,
         )
 
     bot = Bot(token=BOT_TOKEN)
