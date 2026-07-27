@@ -15,6 +15,7 @@ NutriSnap_Twin_bot/
 ├── initial_survey.py      # Первичный опрос: профиль → цель → timezone → ккал
 ├── food_recognition.py    # FSM-флоу распознавания еды (Gemini + confirm UI)
 ├── requests_DB_test.py    # Песочница: test_users/food_logs/reminders_crud
+├── requests_DB_latency_test.py  # Песочница: GET users + latency_ms
 ├── nutriclip_DB_swagger_documentation.json  # OpenAPI 3.1 NocoDB (источник правды)
 ├── test_3_local.py        # Локальный прототип анализа фото (без Telegram)
 ├── test_4_tg_bot.py       # Минимальный каркас бота (/start + кнопка)
@@ -70,6 +71,11 @@ main.py
 
 - Песочница поверх `db_nocodb`: `test_users_crud`, `test_food_logs_crud`, `test_reminders_crud`.
 - Правило: новый запрос сначала прогонять здесь (2xx + до/после для DELETE), потом встраивать в бота. После 5 неудач подряд при верной доке — стоп, проверить NocoDB IDE.
+
+### `requests_DB_latency_test.py`
+
+- Урезанная песочница: один `GET users` через `call_api` + замер `perf_counter` → `latency_ms`.
+- Запуск: `python requests_DB_latency_test.py`.
 
 ### `initial_survey.py`
 
