@@ -8,6 +8,7 @@ main.py — точка входа Telegram-бота NutriSnap (@nutrisnap_ultra_
 Распознавание еды — в food_recognition.py (отдельный Router).
 Первичный опрос — в initial_survey.py (флаг INITIAL_SURVEY_ENABLED).
 Обратная связь (баг / идея) — SMTP-письмо на FEEDBACK_TO_EMAIL.
+FAQ в настройках — обзор возможностей и ответы по темам (распознавание, дневник, …).
 
 Как устроен файл
 ----------------
@@ -102,6 +103,13 @@ BTN_MONTH_60_90 = "3️⃣ От 60 до 90 дней назад"
 BTN_SET_DAY_HOUR = "🕓 Время смены суток"
 BTN_SET_REMINDERS = "🔔 Напоминания и Витамины"
 BTN_SET_EXPORT = "📤 Сделать выгрузку журнала"
+BTN_SET_HELP = "❓ Инструкции к боту в вопросах и ответах"
+BTN_HELP_OVERVIEW = "📋 Обзор возможностей"
+BTN_HELP_RECOGNIZE = "🍽 Как работает распознавание"
+BTN_HELP_DIARY = "📒 Как устроен дневник"
+BTN_HELP_REMINDERS = "🔔 Как работают напоминания"
+BTN_HELP_EXPORT = "📤 Как сделать выгрузку"
+BTN_HELP_DAY_HOUR = "🕓 Что такое смена суток"
 BTN_SET_FEEDBACK = "💬 Отправить отзыв или сообщить об ошибке"
 BTN_FEEDBACK_BUG = "🐞 Сообщить об ошибке"
 BTN_FEEDBACK_IDEA = "💡 Предложение по улучшению функционала"
@@ -148,6 +156,141 @@ RECOGNIZE_HINT_TEXT = (
     "\n"
     "🚀 Можешь начинать распознавание прямо сейчас — отправь в чат фото или текст описания еды:"
 )
+
+# Обзор FAQ (~2/3 приветствия из initial_survey.WELCOME_TEXT, без блока «С чего начать»).
+# Используется экраном «Инструкции к боту» в настройках.
+HELP_OVERVIEW_TEXT = (
+    "Инструкции к боту:\n"
+    "\n"
+    "👋 NutriClick — твой помощник по учёту калорий.\n"
+    "\n"
+    "Помогаю легко следить за тем, что ты ешь за день: сколько уже съедено, "
+    "сколько осталось до цели и из чего складывается рацион.\n"
+    "\n"
+    "<b>✨ Что умею</b>\n"
+    "\n"
+    "<b>🍽 Быстрый учёт еды</b>\n"
+    "Пришли фото блюда или просто напиши, что съел — я распознаю еду "
+    "и посчитаю калории и БЖУ.\n"
+    "\n"
+    "<b>📒 Дневник питания</b>\n"
+    "Все приёмы пищи за день — в одном удобном месте. Можно смотреть прогресс, "
+    "менять и удалять записи.\n"
+    "\n"
+    "<b>🔔 Напоминания</b>\n"
+    "Напомню позавтракать, пообедать или принять витамины — "
+    "чтобы ничего важного не выпало из дня.\n"
+    "\n"
+    "<b>📊 Прогресс за день</b>\n"
+    "Сразу видно: сколько калорий съедено, сколько осталось до цели "
+    "и баланс белков, жиров и углеводов.\n"
+    "\n"
+    "Выберите тему ниже, чтобы узнать подробнее"
+)
+
+# Подробные ответы FAQ по темам (кнопки в kb_help).
+# Используется хендлерами BTN_HELP_* в настройках.
+HELP_TOPIC_TEXTS: dict[str, str] = {
+    BTN_HELP_RECOGNIZE: (
+        "🍽 Как работает распознавание\n"
+        "\n"
+        "Учитывать еду можно в любой момент — кнопка «🔍 Распознать» "
+        "не обязательна. Просто отправьте сообщение в чат.\n"
+        "\n"
+        "<b>Что можно прислать</b>\n"
+        "⠀⠀⠀📸 фото блюда\n"
+        "⠀⠀⠀📸+📝 фото с подписью (что это и/или примерный вес)\n"
+        "⠀⠀⠀🏷️ фото этикетки с ккал и БЖУ\n"
+        "⠀⠀⠀📝 только текст: «борщ 300 г», «яйцо и тост» и т.п.\n"
+        "\n"
+        "<b>После оценки</b>\n"
+        "Появится превью с ккал, БЖУ и порцией. Можно подтвердить ✅ "
+        "или нажать ✏️ и:\n"
+        "⠀⠀⠀• изменить вес порции (КБЖУ пересчитаются)\n"
+        "⠀⠀⠀• дополнить описание\n"
+        "⠀⠀⠀• заменить фото/текст\n"
+        "⠀⠀⠀• не сохранять результат\n"
+        "\n"
+        "Если ничего не нажать — через несколько секунд результат "
+        "подтвердится сам.\n"
+        "\n"
+        "Уже сохранённые записи потом правятся в «📒 Дневник питания» "
+        "(изменить или удалить блюдо)"
+    ),
+    BTN_HELP_DIARY: (
+        "📒 Дневник питания\n"
+        "\n"
+        "Здесь собраны все приёмы пищи за выбранный день: время, название, "
+        "ккал и БЖУ.\n"
+        "\n"
+        "<b>Что можно делать</b>\n"
+        "⠀⠀⠀◀️▶️ листать вчера / другие дни\n"
+        "⠀⠀⠀🟩 добавить блюдо — откроется экран распознавания\n"
+        "⠀⠀⠀✏️ изменить блюдо — выбрать запись по номеру\n"
+        "⠀⠀⠀🗑 удалить блюдо — убрать ошибочную запись\n"
+        "\n"
+        "На главном экране видно прогресс дня: съедено / цель, остаток "
+        "или перебор и сумма БЖУ. Дневник — место, где этот список "
+        "удобно править"
+    ),
+    BTN_HELP_REMINDERS: (
+        "🔔 Напоминания и витамины\n"
+        "\n"
+        "Нужны, чтобы не забыть приём витаминов, добавок или важный "
+        "приём пищи.\n"
+        "\n"
+        "<b>Как настроить</b>\n"
+        "Настройки → «🔔 Напоминания и Витамины» → добавить:\n"
+        "⠀⠀⠀1. название (например, «Омега-3» или «Витамин D»)\n"
+        "⠀⠀⠀2. окно времени: завтрак / обед / ужин\n"
+        "⠀⠀⠀3. на что реагировать: любая еда или только сытный "
+        "приём (&gt;250 ккал)\n"
+        "\n"
+        "<b>Как срабатывает</b>\n"
+        "Когда вы сохраняете еду внутри выбранного окна и она подходит "
+        "по калориям — бот напишет «🔔 Нужно: …». Можно ответить "
+        "«✅ Понятно» или отложить «⏰ На следующую еду».\n"
+        "\n"
+        "В списке напоминания можно включать, выключать и удалять. "
+        "Если ботом долго не пользоваться — уведомления временно "
+        "замирают, чтобы не мешать"
+    ),
+    BTN_HELP_EXPORT: (
+        "📤 Выгрузка журнала\n"
+        "\n"
+        "Файл .txt со всеми записями дневника за выбранный период: "
+        "блюда, ккал, БЖУ, дата и время.\n"
+        "\n"
+        "<b>Где взять</b>\n"
+        "Настройки → «📤 Сделать выгрузку журнала».\n"
+        "\n"
+        "<b>Периоды</b>\n"
+        "⠀⠀⠀📅 текущий день\n"
+        "⠀⠀⠀📆 вчера\n"
+        "⠀⠀⠀🗓 прошедшая неделя\n"
+        "⠀⠀⠀🗂 окна по 30 дней (последние 30 / 30–60 / 60–90)\n"
+        "\n"
+        "<b>Зачем</b>\n"
+        "Сохранить историю для себя или вставить файл в ChatGPT / "
+        "другую нейросеть. В начало уже добавлены ваши характеристики "
+        "и короткий промпт — так проще получить разбор рациона"
+    ),
+    BTN_HELP_DAY_HOUR: (
+        "🕓 Смена суток\n"
+        "\n"
+        "В боте новый день начинается не в полночь, а в выбранный час "
+        "(по умолчанию 04:00).\n"
+        "\n"
+        "Всё, что вы съели до этого часа, относится к предыдущему дню — "
+        "удобно, если ужинаете или перекусываете после полуночи.\n"
+        "\n"
+        "Час и часовой пояс влияют на дневник, прогресс «сегодня» "
+        "и окна напоминаний.\n"
+        "\n"
+        "Поменять час: Настройки → «🕓 Время смены суток». "
+        "Часовой пояс задаётся при опросе (и позже — в данных профиля)"
+    ),
+}
 
 # Шаблоны окон напоминаний (time_start, time_end) — каждый день, без выбора дней недели.
 REMINDER_WINDOWS: dict[str, tuple[str, str]] = {
@@ -203,6 +346,13 @@ MENU_BUTTON_TEXTS: frozenset[str] = frozenset(
         BTN_SET_DAY_HOUR,
         BTN_SET_REMINDERS,
         BTN_SET_EXPORT,
+        BTN_SET_HELP,
+        BTN_HELP_OVERVIEW,
+        BTN_HELP_RECOGNIZE,
+        BTN_HELP_DIARY,
+        BTN_HELP_REMINDERS,
+        BTN_HELP_EXPORT,
+        BTN_HELP_DAY_HOUR,
         BTN_SET_FEEDBACK,
         BTN_FEEDBACK_BUG,
         BTN_FEEDBACK_IDEA,
@@ -1046,7 +1196,25 @@ def kb_settings() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_SET_DAY_HOUR)],
             [KeyboardButton(text=BTN_SET_REMINDERS)],
             [KeyboardButton(text=BTN_SET_EXPORT)],
+            [KeyboardButton(text=BTN_SET_HELP)],
             [KeyboardButton(text=BTN_SET_FEEDBACK)],
+            [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# Reply-клавиатура FAQ: обзор + темы с подробными ответами.
+# Используется show_help и хендлерами BTN_HELP_*.
+def kb_help() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_HELP_OVERVIEW)],
+            [KeyboardButton(text=BTN_HELP_RECOGNIZE)],
+            [KeyboardButton(text=BTN_HELP_DIARY)],
+            [KeyboardButton(text=BTN_HELP_REMINDERS)],
+            [KeyboardButton(text=BTN_HELP_EXPORT)],
+            [KeyboardButton(text=BTN_HELP_DAY_HOUR)],
             [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
         ],
         resize_keyboard=True,
@@ -1267,12 +1435,13 @@ async def push_reply_keyboard(
 
 # Экран по Reply-кнопке. Если есть «Выберите действие:» — превращаем его в новый текст
 # (без пыли, как статус анализа); иначе шлём новое сообщение.
-# Используется show_* и промптами подменю.
+# Используется show_* и промптами подменю. parse_mode — для HTML (FAQ и т.п.).
 async def replace_ui(
     message: Message,
     state: FSMContext,
     text: str,
     reply_markup: ReplyKeyboardMarkup | InlineKeyboardMarkup | None = None,
+    parse_mode: str | None = None,
 ) -> Message:
     stale_ids = await pop_action_prompt_ids(state)
     if stale_ids:
@@ -1281,6 +1450,7 @@ async def replace_ui(
                 text=text,
                 chat_id=message.chat.id,
                 message_id=stale_ids[0],
+                parse_mode=parse_mode,
             )
             if isinstance(reply_markup, ReplyKeyboardMarkup):
                 await push_reply_keyboard(message, reply_markup)
@@ -1304,7 +1474,9 @@ async def replace_ui(
         except Exception:
             pass
 
-    sent = await message.answer(text, reply_markup=reply_markup)
+    sent = await message.answer(
+        text, reply_markup=reply_markup, parse_mode=parse_mode
+    )
     await state.update_data(**{UI_MESSAGE_ID_KEY: sent.message_id})
     if stale_ids:
         await dismiss_action_prompts(message.bot, message.chat.id, stale_ids)
@@ -1463,6 +1635,38 @@ async def show_feedback_menu(message: Message, state: FSMContext) -> None:
         "\n"
         "Выберите, что хотите отправить:",
         reply_markup=kb_feedback(),
+    )
+
+
+# Экран FAQ: общий обзор возможностей + кнопки тем.
+# Используется кнопкой BTN_SET_HELP, «Обзор возможностей» и «Назад» из настроек.
+async def show_help(message: Message, state: FSMContext) -> None:
+    await state.set_state(None)
+    await state.update_data(menu_screen="help")
+    await replace_ui(
+        message,
+        state,
+        HELP_OVERVIEW_TEXT,
+        reply_markup=kb_help(),
+        parse_mode="HTML",
+    )
+
+
+# Показать текст одной темы FAQ, оставаясь в разделе инструкций.
+# Используется хендлерами кнопок BTN_HELP_* (кроме обзора).
+async def show_help_topic(message: Message, state: FSMContext, topic_btn: str) -> None:
+    text = HELP_TOPIC_TEXTS.get(topic_btn)
+    if text is None:
+        await show_help(message, state)
+        return
+    await state.set_state(None)
+    await state.update_data(menu_screen="help")
+    await replace_ui(
+        message,
+        state,
+        text,
+        reply_markup=kb_help(),
+        parse_mode="HTML",
     )
 
 
@@ -1823,6 +2027,9 @@ async def on_back(message: Message, state: FSMContext) -> None:
         await show_settings(message, state)
         return
     if screen == "feedback":
+        await show_settings(message, state)
+        return
+    if screen == "help":
         await show_settings(message, state)
         return
     await show_main_menu(message, state)
@@ -2228,6 +2435,48 @@ async def on_settings_export(message: Message, state: FSMContext) -> None:
     await show_export_menu(message, state)
 
 
+# Открыть FAQ с обзором возможностей бота.
+@menu_router.message(F.text == BTN_SET_HELP)
+async def on_settings_help(message: Message, state: FSMContext) -> None:
+    await show_help(message, state)
+
+
+# Вернуться к обзору FAQ из любой темы.
+@menu_router.message(F.text == BTN_HELP_OVERVIEW)
+async def on_help_overview(message: Message, state: FSMContext) -> None:
+    await show_help(message, state)
+
+
+# Тема FAQ: распознавание еды.
+@menu_router.message(F.text == BTN_HELP_RECOGNIZE)
+async def on_help_recognize(message: Message, state: FSMContext) -> None:
+    await show_help_topic(message, state, BTN_HELP_RECOGNIZE)
+
+
+# Тема FAQ: дневник питания.
+@menu_router.message(F.text == BTN_HELP_DIARY)
+async def on_help_diary(message: Message, state: FSMContext) -> None:
+    await show_help_topic(message, state, BTN_HELP_DIARY)
+
+
+# Тема FAQ: напоминания и витамины.
+@menu_router.message(F.text == BTN_HELP_REMINDERS)
+async def on_help_reminders(message: Message, state: FSMContext) -> None:
+    await show_help_topic(message, state, BTN_HELP_REMINDERS)
+
+
+# Тема FAQ: выгрузка журнала.
+@menu_router.message(F.text == BTN_HELP_EXPORT)
+async def on_help_export(message: Message, state: FSMContext) -> None:
+    await show_help_topic(message, state, BTN_HELP_EXPORT)
+
+
+# Тема FAQ: смена суток.
+@menu_router.message(F.text == BTN_HELP_DAY_HOUR)
+async def on_help_day_hour(message: Message, state: FSMContext) -> None:
+    await show_help_topic(message, state, BTN_HELP_DAY_HOUR)
+
+
 # Открыть подменю выбора типа обратной связи.
 @menu_router.message(F.text == BTN_SET_FEEDBACK)
 async def on_feedback_start(message: Message, state: FSMContext) -> None:
@@ -2245,9 +2494,7 @@ async def on_feedback_bug(message: Message, state: FSMContext) -> None:
         "🐞 Сообщить об ошибке\n"
         "\n"
         "Опишите проблему текстом. Можно прикрепить один скриншот "
-        "(удобнее всего — фото с подписью).\n"
-        "\n"
-        "Чтобы отменить — «⬅️ Назад» или «🏠 Главное меню»",
+        "(удобнее всего — фото с подписью).\n",
         reply_markup=kb_nav_only(),
     )
 
@@ -2263,9 +2510,7 @@ async def on_feedback_idea(message: Message, state: FSMContext) -> None:
         "💡 Предложение по улучшению функционала\n"
         "\n"
         "Напишите идею текстом. Можно прикрепить один скриншот "
-        "(удобнее всего — фото с подписью).\n"
-        "\n"
-        "Чтобы отменить — «⬅️ Назад» или «🏠 Главное меню»",
+        "(удобнее всего — фото с подписью).\n",
         reply_markup=kb_nav_only(),
     )
 
