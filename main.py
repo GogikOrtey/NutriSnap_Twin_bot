@@ -13,7 +13,8 @@ FAQ в настройках — обзор возможностей и отве�
 Как устроен файл
 ----------------
 1. Импорты, .env, константы кнопок, MenuFlow.
-2. Хранилище NocoDB (db_nocodb): users / food_logs / reminders.
+2. Хранилище NocoDB (db_nocodb): users (кэш по telegram_id + singleflight) /
+   food_logs / reminders.
 3. SMTP обратной связи (send_feedback_email) + форматтеры / Reply-клавиатуры.
 4. UI-хелперы: Reply → новое сообщение; Inline дневника → edit; чистка «Выберите действие:».
 5. Router меню + хендлеры; /start → опрос или меню по БД; on_food_saved → food_logs + reminders.
@@ -28,7 +29,9 @@ import html
 import io
 import os
 import smtplib
+import threading
 import time
+from concurrent.futures import Future
 from datetime import datetime, timedelta
 from email import encoders
 from email.mime.base import MIMEBase
@@ -409,6 +412,17 @@ class MenuFlow(StatesGroup):
 # Логическая дата последнего сброса is_triggered_today (process-local, до cron).
 _reminder_day_reset: dict[int, str] = {}
 
+# Кэш профиля users по Telegram id (process-local, как MemoryStorage).
+_user_cache: dict[int, dict[str, Any]] = {}
+# id, для которых кэш устарел — следующий get_user ждёт свежий GET.
+_user_stale: set[int] = set()
+# Поколение кэша: invalidate бампит gen, чтобы GET «до PATCH» не закоммитил устаревшее.
+_user_gen: dict[int, int] = {}
+# Singleflight: один активный GET на user_id+gen; параллельные читатели ждут тот же Future.
+_user_inflight: dict[int, Future[dict[str, Any] | None]] = {}
+_user_inflight_gen: dict[int, int] = {}
+_user_cache_lock = threading.Lock()
+
 
 # Профиль отсутствует в NocoDB — пользователь ещё не прошёл опрос / не в БД.
 # Используется get_user; ловится error-handler → ветка как у /start.
@@ -418,19 +432,95 @@ class UserNotRegisteredError(LookupError):
         super().__init__(f"user {user_id} not found in NocoDB")
 
 
-# Профиль пользователя из NocoDB (users). Без автосоздания «тестового» профиля.
+# Стартует GET users для текущего поколения; иначе возвращает тот же Future.
+# Используется get_user и invalidate_user_cache (singleflight).
+def _ensure_user_fetch(user_id: int) -> Future[dict[str, Any] | None]:
+    with _user_cache_lock:
+        gen = _user_gen.get(user_id, 0)
+        existing = _user_inflight.get(user_id)
+        if (
+            existing is not None
+            and not existing.done()
+            and _user_inflight_gen.get(user_id) == gen
+        ):
+            return existing
+        fut: Future[dict[str, Any] | None] = Future()
+        _user_inflight[user_id] = fut
+        _user_inflight_gen[user_id] = gen
+
+    def worker() -> None:
+        try:
+            row = db.get_user(user_id)
+            with _user_cache_lock:
+                # Коммитим только если invalidate не сменил поколение пока шёл GET.
+                if _user_gen.get(user_id, 0) == gen:
+                    if row is None:
+                        _user_cache.pop(user_id, None)
+                    else:
+                        _user_cache[user_id] = dict(row)
+                    _user_stale.discard(user_id)
+            fut.set_result(row)
+        except Exception as e:
+            fut.set_exception(e)
+        finally:
+            with _user_cache_lock:
+                if _user_inflight.get(user_id) is fut:
+                    del _user_inflight[user_id]
+                    _user_inflight_gen.pop(user_id, None)
+
+    threading.Thread(
+        target=worker,
+        name=f"user-fetch-{user_id}",
+        daemon=True,
+    ).start()
+    return fut
+
+
+# Помечает кэш users устаревшим и сразу запускает один GET (не дублируя inflight).
+# Используется после PATCH/upsert профиля (set_day_change_hour / set_goal / …).
+def invalidate_user_cache(user_id: int) -> None:
+    if not user_id:
+        return
+    with _user_cache_lock:
+        _user_stale.add(user_id)
+        _user_gen[user_id] = _user_gen.get(user_id, 0) + 1
+    _ensure_user_fetch(user_id)
+
+
+# Профиль пользователя: кэш по telegram_id, иначе GET (с ожиданием inflight).
 # Используется экранами меню, выгрузкой и расчётом логической даты.
 def get_user(user_id: int) -> dict[str, Any]:
-    row = db.get_user(user_id)
-    if row is None:
-        raise UserNotRegisteredError(user_id)
-    return row
+    while True:
+        with _user_cache_lock:
+            cached = _user_cache.get(user_id)
+            stale = user_id in _user_stale
+            if cached is not None and not stale:
+                return dict(cached)
+
+        row = _ensure_user_fetch(user_id).result()
+
+        with _user_cache_lock:
+            # Пока ждали, мог прийти invalidate → нужен ещё один круг.
+            if user_id in _user_stale:
+                continue
+            cached = _user_cache.get(user_id)
+            if cached is not None:
+                return dict(cached)
+
+        if row is None:
+            raise UserNotRegisteredError(user_id)
+        return dict(row)
 
 
 # Обновляет users.last_active_at (для заморозки напоминаний через 3 дня).
 # Используется при активности в боте и перед проверкой триггеров.
 def touch_user_activity(user_id: int) -> None:
     db.touch_user_activity(user_id)
+    now = int(time.time())
+    with _user_cache_lock:
+        row = _user_cache.get(user_id)
+        if row is not None:
+            row["last_active_at"] = now
 
 
 # Записи дневника за логическую дату YYYY-MM-DD.
@@ -476,25 +566,28 @@ def insert_food_log_from_result(
     )
 
 
-# Обновление day_change_hour в users.
+# Обновление day_change_hour в users + инвалидация кэша.
 # Используется настройкой «Время смены суток».
 def set_day_change_hour(user_id: int, hour: int) -> None:
     db.set_day_change_hour(user_id, hour)
+    invalidate_user_cache(user_id)
 
 
-# Обновление goal в users.
+# Обновление goal в users + инвалидация кэша.
 # Используется настройкой «Тип отслеживания».
 def set_goal(user_id: int, goal: str) -> None:
     db.set_goal(user_id, goal)
+    invalidate_user_cache(user_id)
 
 
-# Обновление daily_calories в users.
+# Обновление daily_calories в users + инвалидация кэша.
 # Используется настройкой «Целевые ккал».
 def set_daily_calories(user_id: int, calories: int) -> None:
     db.set_daily_calories(user_id, calories)
+    invalidate_user_cache(user_id)
 
 
-# Запись полей профиля из первичного опроса (включая timezone и daily_calories).
+# Запись полей профиля из первичного опроса + инвалидация кэша.
 # Используется on_survey_complete после прохождения initial_survey.
 def set_profile(
     user_id: int,
@@ -521,6 +614,7 @@ def set_profile(
         timezone=timezone,
         daily_calories=daily_calories,
     )
+    invalidate_user_cache(user_id)
 
 
 # Подписи типов обратной связи для писем и UI.
@@ -1821,8 +1915,9 @@ async def dispatch_start(
     if INITIAL_SURVEY_ENABLED:
         await start_initial_survey(message, state)
         return
-    existing = db.get_user(uid)
-    if existing is None:
+    try:
+        get_user(uid)
+    except UserNotRegisteredError:
         await start_initial_survey(message, state)
         return
     await state.clear()

@@ -50,7 +50,8 @@ main.py
 - `INITIAL_SURVEY_ENABLED = False`: `/start` смотрит NocoDB `users` — нет записи → опрос, есть → главное меню. Флаг `True` принудительно всегда открывает опрос (отладка UI).
 - `/start` и `dispatch_start`: нет профиля → опрос, есть → меню. `get_user` без записи → `UserNotRegisteredError`; `@dp.error` ловит и зовёт `dispatch_start` (как /start).
 - `/start` (есть профиль) → «🏠 Главный экран | Сегодня» из реальных `food_logs`.
-- Дневник / выгрузка / настройки / reminders — через обёртки `get_user`, `get_food_logs_*`, `set_*`, `add_reminder`, … → `db_nocodb`.
+- Дневник / выгрузка / настройки / reminders — через обёртки `get_user` (кэш), `get_food_logs_*`, `set_*` (+ invalidate), `add_reminder`, … → `db_nocodb`.
+- Кэш `users` в `main.py`: `_user_cache` по telegram_id; `invalidate_user_cache` после PATCH/upsert бампит `_user_gen` и сразу стартует один GET (singleflight `_user_inflight`); параллельный `get_user` ждёт тот же Future / крутит цикл, пока `stale` не снимется. GET «до PATCH» не коммитит кэш. `touch_user_activity` только патчит `last_active_at` в кэше.
 - После ✅ еды: `_on_food_saved` → `insert_food_log_from_result` (emoji в `details_json`) → `trigger_reminders_for_food`.
 - `_on_survey_complete`: «Секунду...» → `asyncio.to_thread(set_profile)` → edit того же сообщения на «Отлично, всё настроено…».
 - Сброс `is_triggered_today` при смене логических суток — process-local `_reminder_day_reset` (до полноценного cron).
