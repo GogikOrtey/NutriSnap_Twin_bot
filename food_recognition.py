@@ -248,10 +248,9 @@ def _generate_with_fallback(contents: list[Any]) -> str | None:
             print(f"Успешно получено на модели {model_name}!")
             break
         except Exception as e:
-            report_console_error(
-                f"Попытка {index} не удалась. Ошибка: {e}",
-                exc=e,
-            )
+            # Промежуточный сбой очереди — только консоль; письмо шлют
+            # хендлеры, когда все попытки дали None (report_service_problem).
+            print(f"Попытка {index} не удалась. Ошибка: {e}", flush=True)
             skipped_models.add(model_name)
 
     return response_text

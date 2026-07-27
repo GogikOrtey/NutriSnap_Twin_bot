@@ -514,9 +514,10 @@ def estimate_daily_calories_gemini(
             if value > 0:
                 return value
         except Exception as e:
-            report_console_error(
+            # Промежуточный сбой очереди моделей — только консоль, без письма.
+            print(
                 f"survey kcal Gemini fallback ({model_name}): {e}",
-                exc=e,
+                flush=True,
             )
     return None
 
