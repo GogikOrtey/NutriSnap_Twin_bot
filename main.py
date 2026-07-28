@@ -132,6 +132,9 @@ STALE_RECOVERY_TEXT = (
     "Если отправляли что-то пока меня не было — пришлите ещё раз"
 )
 
+# Версия бота (кнопка «🔩 Для разработчика» в настройках).
+BOT_VERSION = "v1.0.0"
+
 # Кнопка возврата в корень — есть в основных разделах.
 BTN_MAIN_MENU = "🏠 Главное меню"
 
@@ -171,6 +174,7 @@ BTN_HELP_REMINDERS = "🔔 Как работают напоминания"
 BTN_HELP_EXPORT = "📤 Как сделать выгрузку"
 BTN_HELP_DAY_HOUR = "🕓 Что такое смена суток"
 BTN_SET_FEEDBACK = "💬 Отправить отзыв или сообщить об ошибке"
+BTN_SET_DEVELOPER = "🔩 Для разработчика"
 BTN_FEEDBACK_BUG = "🐞 Сообщить об ошибке"
 BTN_FEEDBACK_IDEA = "💡 Предложение по улучшению функционала"
 BTN_SET_PROFILE = "👤 Изменить данные профиля"
@@ -476,6 +480,7 @@ MENU_BUTTON_TEXTS: frozenset[str] = frozenset(
         BTN_HELP_EXPORT,
         BTN_HELP_DAY_HOUR,
         BTN_SET_FEEDBACK,
+        BTN_SET_DEVELOPER,
         BTN_FEEDBACK_BUG,
         BTN_FEEDBACK_IDEA,
         BTN_SET_PROFILE,
@@ -1605,6 +1610,7 @@ def kb_settings() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_SET_EXPORT)],
             [KeyboardButton(text=BTN_SET_HELP)],
             [KeyboardButton(text=BTN_SET_FEEDBACK)],
+            [KeyboardButton(text=BTN_SET_DEVELOPER)],
             [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
         ],
         resize_keyboard=True,
@@ -3581,6 +3587,12 @@ async def on_help_day_hour(message: Message, state: FSMContext) -> None:
 @menu_router.message(F.text == BTN_SET_FEEDBACK)
 async def on_feedback_start(message: Message, state: FSMContext) -> None:
     await show_feedback_menu(message, state)
+
+
+# Показать текущую версию бота (кнопка «🔩 Для разработчика» в настройках).
+@menu_router.message(F.text == BTN_SET_DEVELOPER)
+async def on_settings_developer(message: Message, state: FSMContext) -> None:
+    await message.answer(f"Версия бота: {BOT_VERSION}")
 
 
 # Старт ввода: багрепорт — ждём текст и/или один скриншот.

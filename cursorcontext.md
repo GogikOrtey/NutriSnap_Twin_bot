@@ -82,6 +82,7 @@ main.py
 - Reminders maintenance (`reminders_maintenance_loop`, раз в час, старт sleep 25 с): `list_all_reminders` + `list_all_users` (без per-user GET) → сброс `is_triggered_today` при смене логических суток; ключ даты в `.reminder_day_keys.json`. Пропущенные окна: `now > time_end`, ещё не triggered, не frozen → «⏰ Напоминание пропущено» + mark triggered.
 - Food logs retention (`food_logs_cleanup_loop`, раз в сутки / 86400 с, старт sleep 55 с): `delete_food_logs_older_than(FOOD_LOG_RETENTION_DAYS=100)` — удаляет записи с `logged_date` &lt; today_UTC−100; в лог пишет число удалённых.
 - Профиль: «🔄 Обновить данные пользователя» → `start_initial_survey`. Смена goal → пересчёт ккал через `resolve_recommended_calories` (Mifflin–St Jeor + Gemini fallback).
+- Версия бота: константа `BOT_VERSION` (`v1.0.0`) в `main.py`; Настройки → «🔩 Для разработчика» → сообщение «Версия бота: …».
 - ReplyKeyboard / Inline / логическая дата / FAQ / SMTP feedback — без изменений UX.
 - `main()`: `setup_logging` + `install_error_email_hooks` + `attach_asyncio_error_handler` + `usage_reminder_loop` + `reminders_maintenance_loop` + `food_logs_cleanup_loop` перед polling.
 
