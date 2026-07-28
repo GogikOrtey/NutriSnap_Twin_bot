@@ -3,3 +3,5 @@ API Gemini key.txt
 __pycache__/
 *.py[cod]
 .reminder_day_keys.json
+logs/
+*.log

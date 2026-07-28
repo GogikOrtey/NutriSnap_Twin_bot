@@ -6,7 +6,7 @@ food_recognition.py — FSM-флоу распознавания еды для Nu
 Вся логика учёта калорий по фото/тексту: промпты и вызовы Gemini, нормализация
 результата, confirm UI (✏️/✅/⚖️ + автоподтверждение), меню правок и связанные
 хендлеры. Подключается из main.py через setup_food_recognition(storage).
-Ошибки Gemini/хендлеров → error_notify (🟧🍎 + TECH_ISSUES_USER_TEXT при
+Ошибки Gemini/хендлеров → error_notify + logging (🟧🍎 + TECH_ISSUES_USER_TEXT при
 сбое внешнего сервиса; иначе 🟨⬛🍎).
 
 Как устроен файл (блоки сверху вниз)
@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import logging
 import os
 import re
 import tempfile
@@ -74,6 +75,8 @@ from proxy_config import make_gemini_client
 
 #region Конфиг
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -277,16 +280,22 @@ def _generate_with_fallback(
 
     for index, model_name in enumerate(MODELS_QUEUE, start=1):
         if model_name in skipped_models:
-            print(
-                f"\n[Попытка {index}/{total_attempts}] Пропуск {model_name}: "
-                f"уже не ответила в лимите {REQUEST_TIMEOUT_MS // 1000} с."
+            logger.info(
+                "[Попытка %s/%s] Пропуск %s: уже не ответила в лимите %s с.",
+                index,
+                total_attempts,
+                model_name,
+                REQUEST_TIMEOUT_MS // 1000,
             )
             continue
 
         try:
-            print(
-                f"\n[Попытка {index}/{total_attempts}] Отправка запроса к модели: {model_name} "
-                f"(таймаут {REQUEST_TIMEOUT_MS // 1000} с)..."
+            logger.info(
+                "[Попытка %s/%s] Отправка запроса к модели: %s (таймаут %s с)...",
+                index,
+                total_attempts,
+                model_name,
+                REQUEST_TIMEOUT_MS // 1000,
             )
             response = client.models.generate_content(
                 model=model_name,
@@ -301,12 +310,12 @@ def _generate_with_fallback(
                 },
             )
             response_text = response.text
-            print(f"Успешно получено на модели {model_name}!")
+            logger.info("Успешно получено на модели %s", model_name)
             break
         except Exception as e:
-            # Промежуточный сбой очереди — только консоль; письмо шлют
+            # Промежуточный сбой очереди — только лог; письмо шлют
             # хендлеры, когда все попытки дали None (report_service_problem).
-            print(f"Попытка {index} не удалась. Ошибка: {e}", flush=True)
+            logger.warning("Попытка %s не удалась. Ошибка: %s", index, e)
             skipped_models.add(model_name)
 
     return response_text
@@ -315,9 +324,9 @@ def _generate_with_fallback(
 # Анализ фото блюда/этикетки через Gemini Files API; опционально с текстовой подсказкой.
 # Используется в обработчиках фото и повторного запроса после waiting_hint.
 def analyze_food_photo(image_path: str, hint: str | None = None) -> str | None:
-    print("Загрузка файла в Google Files API...")
+    logger.info("Загрузка файла в Google Files API...")
     uploaded_file = client.files.upload(file=image_path)
-    print(f"Файл успешно загружен. URI: {uploaded_file.uri}")
+    logger.info("Файл успешно загружен. URI: %s", uploaded_file.uri)
 
     contents: list[Any] = [uploaded_file]
     if hint:
@@ -327,7 +336,7 @@ def analyze_food_photo(image_path: str, hint: str | None = None) -> str | None:
     try:
         return _generate_with_fallback(contents)
     finally:
-        print("\nУдаление временного файла из Google Cloud...")
+        logger.info("Удаление временного файла из Google Cloud...")
         try:
             client.files.delete(name=uploaded_file.name)
         except Exception as e:
@@ -582,15 +591,13 @@ async def end_with_status_text(
 #endregion
 
 #region Утилиты
-# Печатает итоговый JSON результата в консоль (заглушка вместо дневника/БД).
+# Пишет итоговый JSON результата в лог (заглушка вместо дневника/БД).
 # Используется из persist_confirmed_food при ✅ / автотаймауте / после пересчёта веса.
 def save_to_console(result: FoodResult) -> None:
     payload = result.model_dump()
-    print(
-        "\n===== SAVE (console) =====\n"
-        f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
-        "==========================\n",
-        flush=True,
+    logger.info(
+        "===== SAVE =====\n%s\n================",
+        json.dumps(payload, ensure_ascii=False, indent=2),
     )
 
 
@@ -653,10 +660,13 @@ def prepare_image_for_gemini(src_path: Path) -> Path:
     if out_path.resolve() != src_path.resolve():
         src_path.unlink(missing_ok=True)
 
-    print(
-        f"Фото для Gemini: {src_size // 1024} КБ -> {out_size // 1024} КБ "
-        f"({out_w}x{out_h}, q={IMAGE_JPEG_QUALITY})",
-        flush=True,
+    logger.info(
+        "Фото для Gemini: %s КБ -> %s КБ (%sx%s, q=%s)",
+        src_size // 1024,
+        out_size // 1024,
+        out_w,
+        out_h,
+        IMAGE_JPEG_QUALITY,
     )
     return out_path
 

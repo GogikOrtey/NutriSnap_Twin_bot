@@ -9,6 +9,7 @@ main.py — точка входа Telegram-бота NutriSnap (@nutrisnap_ultra_
 Первичный опрос — в initial_survey.py; /start смотрит NocoDB users.
 Обратная связь (баг / идея) — SMTP-письмо на FEEDBACK_TO_EMAIL.
 Консольные ошибки → error_notify (письмо с префиксом 🟨⬛🍎).
+Логирование → app_logging (консоль + logs/bot.log с ротацией).
 FAQ в настройках — обзор возможностей и ответы по темам (распознавание, дневник, …).
 
 Как устроен файл
@@ -22,7 +23,7 @@ FAQ в настройках — обзор возможностей и отве�
 6. UserNotRegisteredError → error-handler → та же ветка, что /start;
    сбои БД/Gemini/сети → TECH_ISSUES_USER_TEXT + письмо 🟧🍎;
    прочие необработанные update-ошибки → report_console_error (🟨⬛🍎).
-7. main() — хуки error_notify + polling + фоновый usage-reminder (13:00),
+7. main() — setup_logging + хуки error_notify + polling + фоновый usage-reminder (13:00),
    reminders_maintenance (сброс is_triggered_today + пропущенные окна)
    и food_logs_cleanup (удаление записей с logged_date старше 100 дней);
    Telegram-сессия через прокси при TELEGRAM_PROXY / OUTBOUND_HTTPS_PROXY
@@ -39,6 +40,7 @@ import asyncio
 import html
 import io
 import json
+import logging
 import os
 import random
 import smtplib
@@ -77,6 +79,7 @@ from aiogram.types import (
 from dotenv import load_dotenv
 
 import db_nocodb as db
+from app_logging import setup_logging
 from error_notify import (
     TECH_ISSUES_USER_TEXT,
     attach_asyncio_error_handler,
@@ -102,6 +105,8 @@ from proxy_config import get_telegram_proxy
 
 #region Конфиг и тексты кнопок
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -931,10 +936,11 @@ async def send_feedback_email(
         photo_bytes=photo_bytes,
         photo_filename=photo_filename,
     )
-    print(
-        f"feedback sent kind={kind} user_id={user_id} "
-        f"has_photo={bool(photo_bytes)}",
-        flush=True,
+    logger.info(
+        "feedback sent kind=%s user_id=%s has_photo=%s",
+        kind,
+        user_id,
+        bool(photo_bytes),
     )
 
 
@@ -1095,10 +1101,12 @@ def trigger_reminders_for_food(
         updated = dict(row)
         updated["is_triggered_today"] = True
         triggered.append(updated)
-        print(
-            f"reminder triggered user_id={user_id} id={updated['id']} "
-            f"title={updated['title']!r} kcal={kcal}",
-            flush=True,
+        logger.info(
+            "reminder triggered user_id=%s id=%s title=%r kcal=%s",
+            user_id,
+            updated["id"],
+            updated["title"],
+            kcal,
         )
     _patch_reminders_parallel(mark_ids, {"is_triggered_today": True})
     return triggered
@@ -1140,10 +1148,13 @@ def _check_missed_reminders_for_rows(
         updated = dict(row)
         updated["is_triggered_today"] = True
         missed.append(updated)
-        print(
-            f"reminder missed user_id={user_id} id={updated['id']} "
-            f"title={updated['title']!r} window={row.get('time_start')}-{time_end}",
-            flush=True,
+        logger.info(
+            "reminder missed user_id=%s id=%s title=%r window=%s-%s",
+            user_id,
+            updated["id"],
+            updated["title"],
+            row.get("time_start"),
+            time_end,
         )
     _patch_reminders_parallel(mark_ids, {"is_triggered_today": True})
     return missed
@@ -4387,10 +4398,10 @@ async def food_logs_cleanup_loop() -> None:
             deleted = await asyncio.to_thread(
                 db.delete_food_logs_older_than, db.FOOD_LOG_RETENTION_DAYS
             )
-            print(
-                f"🟦 food_logs cleanup: удалено {deleted} "
-                f"(старше {db.FOOD_LOG_RETENTION_DAYS} дн.)",
-                flush=True,
+            logger.info(
+                "food_logs cleanup: удалено %s (старше %s дн.)",
+                deleted,
+                db.FOOD_LOG_RETENTION_DAYS,
             )
         except Exception as e:
             report_error_auto(f"food_logs_cleanup_loop tick failed: {e}", exc=e)
@@ -4402,6 +4413,7 @@ async def food_logs_cleanup_loop() -> None:
 # Telegram-сессия: при TELEGRAM_PROXY/OUTBOUND_HTTPS_PROXY — через локальный
 # mihomo (VPS); иначе напрямую (локальная разработка). Фото/getFile — та же сессия.
 async def main() -> None:
+    setup_logging()
     install_error_email_hooks()
     attach_asyncio_error_handler(asyncio.get_running_loop())
 
@@ -4415,10 +4427,9 @@ async def main() -> None:
         )
 
     if not SMTP_PASSWORD:
-        print(
-            "🟧 SMTP_PASSWORD не задан в .env — отзывы и письма об ошибках "
-            "на почту не будут работать, пока не добавите пароль приложения Yandex",
-            flush=True,
+        logger.warning(
+            "SMTP_PASSWORD не задан в .env — отзывы и письма об ошибках "
+            "на почту не будут работать, пока не добавите пароль приложения Yandex"
         )
 
     telegram_proxy = get_telegram_proxy()
@@ -4426,12 +4437,12 @@ async def main() -> None:
     if telegram_proxy:
         # Нужен пакет aiohttp-socks (см. requirements.txt).
         session = AiohttpSession(proxy=telegram_proxy)
-        print(f"🟦 Telegram через прокси: {telegram_proxy}", flush=True)
+        logger.info("Telegram через прокси: %s", telegram_proxy)
     else:
-        print("🟦 Telegram напрямую (прокси не задан)", flush=True)
+        logger.info("Telegram напрямую (прокси не задан)")
 
     bot = Bot(token=BOT_TOKEN, session=session) if session else Bot(token=BOT_TOKEN)
-    print("🟩 Бот @nutrisnap_ultra_bot запущен. Нажми Ctrl+C для остановки", flush=True)
+    logger.info("Бот @nutrisnap_ultra_bot запущен. Нажми Ctrl+C для остановки")
     usage_task = asyncio.create_task(
         usage_reminder_loop(bot), name="usage-reminder-loop"
     )
@@ -4459,5 +4470,5 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n🟧 Бот остановлен", flush=True)
+        logging.getLogger(__name__).info("Бот остановлен")
 #endregion

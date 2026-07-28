@@ -11,7 +11,8 @@ Telegram-бот для учёта калорий по фото/тексту (Nut
 ```
 NutriSnap_Twin_bot/
 ├── main.py                # Точка входа: /start, меню, обёртки БД, роутеры
-├── error_notify.py        # Консольные ошибки → SMTP-письмо 🟨⬛🍎 на FEEDBACK_TO_EMAIL
+├── app_logging.py         # Логи: консоль + logs/bot.log (ротация)
+├── error_notify.py        # Ошибки → лог + SMTP-письмо 🟨⬛🍎 на FEEDBACK_TO_EMAIL
 ├── proxy_config.py        # Точечный HTTPS-прокси для Telegram + Gemini (VPS)
 ├── db_nocodb.py           # Клиент NocoDB Data API v3 (users / food_logs / reminders)
 ├── initial_survey.py      # Первичный опрос: профиль → цель → timezone → ккал
@@ -24,8 +25,9 @@ NutriSnap_Twin_bot/
 ├── img_1.jpg              # Тестовое фото для локального запуска
 ├── requirements.txt       # pip-зависимости (в т.ч. aiohttp-socks)
 ├── .env                   # Секреты (не в git)
-├── .env.example           # Шаблон переменных окружения
-├── .gitignore
+├── .env.example           # Шаблон переменных окружения (+ LOG_LEVEL)
+├── .gitignore             # в т.ч. logs/, *.log
+├── logs/                  # bot.log (+ ротация; не в git)
 ├── .reminder_day_keys.json  # Локальный ключ сброса is_triggered_today (не в git)
 ├── backlog.md             # Личный бэклог (не править агентом)
 └── Старое/                # Устаревшие эксперименты (не использовать как основу)
@@ -36,8 +38,9 @@ NutriSnap_Twin_bot/
 ```
 main.py
   ├── Bot + AiohttpSession(proxy?) + Dispatcher + MemoryStorage
+  ├── app_logging.setup_logging()           # консоль + logs/bot.log
   ├── proxy_config.py                   # TELEGRAM_/GEMINI_/OUTBOUND_HTTPS_PROXY
-  ├── error_notify.py                   # report_console_error + хуки → SMTP 🟨⬛🍎
+  ├── error_notify.py                   # report_console_error + хуки → лог + SMTP 🟨⬛🍎
   ├── /start → db.get_user? опрос : меню  (INITIAL_SURVEY_ENABLED=False)
   ├── db_nocodb.py                      # HTTP xc-token → NocoDB (без прокси)
   ├── include_router(menu_router)
@@ -69,18 +72,26 @@ main.py
 - `_on_survey_complete`: сразу текст про usage-reminder + inline «🟩 Хорошо»; `set_profile` стартует параллельно (`_survey_profile_saves`). По кнопке — await upsert → напоминание закрепить/положить в важную папку (`SURVEY_PIN_REMINDER_TEXT`) с inline «Жду выполнения (15)»…«(1)» → «Готово» (клик во время отсчёта игнорируется) → «всё настроено» + `show_recognize`.
 - Usage-reminder: если `usage_reminder_enabled` и до 13:00 (TZ юзера) `last_food_logged_on` ≠ логический today — фоновый `usage_reminder_loop` (раз в час, старт sleep 40 с) шлёт сообщение и пишет `usage_reminder_sent_on`. Тик: только `list_users_with_usage_reminder` (без N+1 к food_logs). Вкл/выкл: Настройки → Напоминания → «📲 Напоминание использования бота».
 - Reminders maintenance (`reminders_maintenance_loop`, раз в час, старт sleep 25 с): `list_all_reminders` + `list_all_users` (без per-user GET) → сброс `is_triggered_today` при смене логических суток; ключ даты в `.reminder_day_keys.json`. Пропущенные окна: `now > time_end`, ещё не triggered, не frozen → «⏰ Напоминание пропущено» + mark triggered.
-- Food logs retention (`food_logs_cleanup_loop`, раз в сутки / 86400 с, старт sleep 55 с): `delete_food_logs_older_than(FOOD_LOG_RETENTION_DAYS=100)` — удаляет записи с `logged_date` &lt; today_UTC−100; в консоль пишет число удалённых.
+- Food logs retention (`food_logs_cleanup_loop`, раз в сутки / 86400 с, старт sleep 55 с): `delete_food_logs_older_than(FOOD_LOG_RETENTION_DAYS=100)` — удаляет записи с `logged_date` &lt; today_UTC−100; в лог пишет число удалённых.
 - Профиль: «🔄 Обновить данные пользователя» → `start_initial_survey`. Смена goal → пересчёт ккал через `resolve_recommended_calories` (Mifflin–St Jeor + Gemini fallback).
 - ReplyKeyboard / Inline / логическая дата / FAQ / SMTP feedback — без изменений UX.
-- `main()`: `install_error_email_hooks` + `attach_asyncio_error_handler` + `usage_reminder_loop` + `reminders_maintenance_loop` + `food_logs_cleanup_loop` перед polling.
+- `main()`: `setup_logging` + `install_error_email_hooks` + `attach_asyncio_error_handler` + `usage_reminder_loop` + `reminders_maintenance_loop` + `food_logs_cleanup_loop` перед polling.
+
+### `app_logging.py`
+
+- `setup_logging()` — root logger: StreamHandler + RotatingFileHandler (`logs/bot.log`, 5 МБ × 5 файлов).
+- Формат: `YYYY-MM-DD HH:MM:SS | LEVEL | module | message`.
+- Уровень из `LOG_LEVEL` (по умолчанию INFO); aiogram/aiohttp/httpx/google_genai → WARNING.
+- Модули: `logger = logging.getLogger(__name__)`.
+- При тестировании на windows (cp1251): символ `→` в лог-сообщениях ломает вывод консоли (`UnicodeEncodeError`); в текстах логов использовать ASCII `->`.
 
 ### `error_notify.py`
 
-- `report_console_error(msg, exc=?)` — print + SMTP, тема `🟨⬛🍎 [NutriClick] ошибка в консоли`.
-- `report_service_problem(msg, exc=?)` — print + SMTP, тема `🟧🍎 [NutriClick] проблема с внешним сервисом` (БД / Gemini / сеть).
+- `report_console_error(msg, exc=?)` — logger.error + SMTP, тема `🟨⬛🍎 [NutriClick] ошибка в консоли`.
+- `report_service_problem(msg, exc=?)` — logger.error + SMTP, тема `🟧🍎 [NutriClick] проблема с внешним сервисом` (БД / Gemini / сеть).
 - `is_external_service_error` / `report_error_auto` — классификация; при внешнем сбое UX = `TECH_ISSUES_USER_TEXT` в чате.
 - `notify_user_tech_issues` / `notify_user_tech_issues_from_event` — текст пользователю.
-- Антиспам: одинаковый текст не чаще раза в 5 мин; сбой SMTP → только консоль (без рекурсии).
+- Антиспам: одинаковый текст не чаще раза в 5 мин; сбой SMTP → только лог (без рекурсии).
 - Хуки: `sys.excepthook`, `threading.excepthook`, asyncio exception handler.
 - Используется из main / food_recognition / initial_survey.
 
@@ -121,7 +132,7 @@ main.py
 ### `food_recognition.py`
 
 - Клиент Gemini через `make_gemini_client` (прокси на VPS).
-- `_generate_with_fallback`: промежуточные сбои моделей (503/504 и т.п.) — только `print` в консоль, без письма; на почту уходит, когда все попытки исчерпаны и хендлер зовёт `report_service_problem` (пустой/неразобранный ответ). Принимает `response_schema` (FoodResult / FoodLogEditResult).
+- `_generate_with_fallback`: промежуточные сбои моделей (503/504 и т.п.) — только `logger.warning`, без письма; на почту уходит, когда все попытки исчерпаны и хендлер зовёт `report_service_problem` (пустой/неразобранный ответ). Принимает `response_schema` (FoodResult / FoodLogEditResult).
 - `analyze_food_log_edit` + `parse_food_log_edit`: свободная текстовая правка записи дневника (status applied/unclear/irrelevant) → UPDATE в main.
 - Фото перед Files API: `prepare_image_for_gemini` (Pillow) — EXIF-ориентация, длинная сторона ≤1024px, JPEG q=80; вызывается из `download_photo_temp`.
 - Без изменений флоу Gemini/FSM распознавания; `persist_confirmed_food` → консоль + `on_food_saved` (запись в БД в main).

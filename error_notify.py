@@ -3,17 +3,18 @@ error_notify.py — письма разработчику и UX при сбоя�
 
 Зачем нужен файл
 ----------------
-1) Консольные ошибки → SMTP на FEEDBACK_TO_EMAIL с префиксом 🟨⬛🍎
+1) Ошибки → logging + SMTP на FEEDBACK_TO_EMAIL с префиксом 🟨⬛🍎
    (report_console_error + глобальные хуки).
 2) Сбои БД / Gemini / сети → то же + префикс 🟧🍎 и текст пользователю
    в чате (report_service_problem / TECH_ISSUES_USER_TEXT).
-SMTP без прокси. При сбое отправки письма — только консоль, без рекурсии.
+SMTP без прокси. При сбое отправки письма — только лог, без рекурсии.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import smtplib
 import sys
@@ -28,6 +29,8 @@ from typing import Any
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # Префиксы темы писем (по ТЗ).
 EMAIL_PREFIX_CONSOLE = "🟨⬛🍎"
@@ -78,10 +81,7 @@ def _should_email(text: str) -> bool:
 # Используется фоновым потоком из _send_email_async.
 def _smtp_send_error(subject: str, body: str) -> None:
     if not SMTP_USER or not SMTP_PASSWORD:
-        print(
-            "🟧 SMTP не настроен — письмо об ошибке не отправлено",
-            flush=True,
-        )
+        logger.warning("SMTP не настроен — письмо об ошибке не отправлено")
         return
     msg = MIMEText(body, "plain", "utf-8")
     msg["From"] = SMTP_USER
@@ -101,12 +101,12 @@ def _send_email_async(subject: str, body: str) -> None:
                 _smtp_send_error(subject, body)
         except Exception as e:
             # Без report_* — иначе цикл при мёртвом SMTP.
-            print(f"🟧 error_notify SMTP failed: {e}", flush=True)
+            logger.error("error_notify SMTP failed: %s", e)
 
     threading.Thread(target=_worker, name="error-email", daemon=True).start()
 
 
-# Собирает текст ошибки, печатает в консоль и шлёт письмо с заданным префиксом.
+# Собирает текст ошибки, пишет в лог и шлёт письмо с заданным префиксом.
 # Используется report_console_error / report_service_problem.
 def _emit_error_email(
     message: str,
@@ -125,7 +125,7 @@ def _emit_error_email(
             ).rstrip()
         )
     full = "\n\n".join(parts) if parts else "(empty error)"
-    print(full, flush=True)
+    logger.error("%s %s", subject_prefix, full)
 
     if not _should_email(f"{subject_prefix}\n{full}"):
         return full
@@ -217,7 +217,7 @@ def is_external_service_error(exc: BaseException | None) -> bool:
     return False
 
 
-# Печатает ошибку в консоль и шлёт письмо 🟨⬛🍎 (любая консольная ошибка).
+# Пишет ошибку в лог и шлёт письмо 🟨⬛🍎 (любая консольная ошибка).
 # Используется except-блоками и глобальными хуками исключений.
 def report_console_error(
     message: str,
@@ -232,7 +232,7 @@ def report_console_error(
     )
 
 
-# Печатает сбой внешнего сервиса и шлёт письмо 🟧🍎 (БД / Gemini / сеть).
+# Пишет сбой внешнего сервиса в лог и шлёт письмо 🟧🍎 (БД / Gemini / сеть).
 # Используется вместе с TECH_ISSUES_USER_TEXT в чате пользователя.
 def report_service_problem(
     message: str,
@@ -247,7 +247,7 @@ def report_service_problem(
     )
 
 
-# Выбирает 🟧🍎 или 🟨⬛🍎 по типу исключения и шлёт письмо (+ print).
+# Выбирает 🟧🍎 или 🟨⬛🍎 по типу исключения и шлёт письмо (+ лог).
 # Используется единым except в хендлерах, когда нужна авто-классификация.
 def report_error_auto(
     message: str,
@@ -278,7 +278,7 @@ async def notify_user_tech_issues(
         if bot is not None and chat_id is not None:
             await bot.send_message(chat_id, text)
     except Exception as e:
-        print(f"🟧 notify_user_tech_issues failed: {e}", flush=True)
+        logger.error("notify_user_tech_issues failed: %s", e)
 
 
 # Из ErrorEvent aiogram достаёт chat и шлёт TECH_ISSUES_USER_TEXT.
@@ -299,7 +299,7 @@ async def notify_user_tech_issues_from_event(event: Any) -> None:
                 pass
             await cq.message.answer(TECH_ISSUES_USER_TEXT)
     except Exception as e:
-        print(f"🟧 notify_user_tech_issues_from_event failed: {e}", flush=True)
+        logger.error("notify_user_tech_issues_from_event failed: %s", e)
 
 
 # sys.excepthook: необработанные исключения главного потока → почта.

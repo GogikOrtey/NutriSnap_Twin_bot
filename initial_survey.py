@@ -12,7 +12,7 @@ FSM-флоу стартового опроса: приветствие → ка�
 выключенного GPS (Telegram тогда не шлёт update боту).
 Gemini fallback ккал — через proxy_config.make_gemini_client (прокси на VPS).
 Nominatim / timezonefinder — без прокси.
-Ошибки формулы/Gemini ккал → error_notify.report_console_error (консоль + 🟨⬛🍎).
+Ошибки формулы/Gemini ккал → error_notify.report_console_error (лог + 🟨⬛🍎).
 Сбой сохранения профиля обрабатывается в main (_on_survey_complete /
 «🟩 Хорошо» → 🟧🍎). После опроса: текст про usage-reminder (upsert
 параллельно) → «🟩 Хорошо» → напоминание закрепить бота (кнопка
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -51,6 +52,8 @@ from timezonefinder import TimezoneFinder
 
 #region Константы кнопок и тексты
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 REQUEST_TIMEOUT_MS = 10_000
@@ -515,11 +518,8 @@ def estimate_daily_calories_gemini(
             if value > 0:
                 return value
         except Exception as e:
-            # Промежуточный сбой очереди моделей — только консоль, без письма.
-            print(
-                f"survey kcal Gemini fallback ({model_name}): {e}",
-                flush=True,
-            )
+            # Промежуточный сбой очереди моделей — только лог, без письма.
+            logger.warning("survey kcal Gemini fallback (%s): %s", model_name, e)
     return None
 
 
