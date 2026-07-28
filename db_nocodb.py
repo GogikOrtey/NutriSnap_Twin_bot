@@ -8,6 +8,8 @@
 Опционально check_owner=False у update_food_log / delete_food_log /
 set_reminder_active / delete_reminder / snooze_reminder — без ownership-GET,
 когда id уже из FSM.
+users.last_food_logged_on — логическая дата последней еды (usage-reminder
+без N+1 к food_logs); list_all_users — для reminders_maintenance.
 """
 
 from __future__ import annotations
@@ -179,6 +181,20 @@ def _link_user_id(fields: dict[str, Any]) -> int | None:
 # ---------------------------------------------------------------------------
 
 
+# Приводит дату NocoDB (Date / ISO / YYYY-MM-DD) к строке YYYY-MM-DD.
+# Используется _normalize_user для usage_reminder_sent_on / last_food_logged_on.
+def _as_yyyy_mm_dd(value: Any) -> str:
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    # "2026-07-28" или "2026-07-28T00:00:00.000Z" / "2026-07-28 00:00:00"
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return s[:10]
+    return s
+
+
 # Нормализует профиль users к формату stub (плоский dict).
 # Используется get_user / upsert_profile / PATCH-хелперами.
 def _normalize_user(row: dict[str, Any]) -> dict[str, Any]:
@@ -200,7 +216,8 @@ def _normalize_user(row: dict[str, Any]) -> dict[str, Any]:
         "last_active_at": int(row.get("last_active_at") or 0),
         "created_at": int(row.get("created_at") or 0),
         "usage_reminder_enabled": usage_reminder_enabled,
-        "usage_reminder_sent_on": str(row.get("usage_reminder_sent_on") or "").strip(),
+        "usage_reminder_sent_on": _as_yyyy_mm_dd(row.get("usage_reminder_sent_on")),
+        "last_food_logged_on": _as_yyyy_mm_dd(row.get("last_food_logged_on")),
     }
 
 
@@ -341,7 +358,15 @@ def set_usage_reminder_enabled(user_id: int, enabled: bool) -> dict[str, Any]:
 # PATCH users.usage_reminder_sent_on = YYYY-MM-DD (антидубль за сутки).
 # Используется фоновым чекером usage-reminder после успешной отправки.
 def mark_usage_reminder_sent(user_id: int, sent_on: str) -> dict[str, Any]:
-    return update_user(user_id, {"usage_reminder_sent_on": str(sent_on)})
+    return update_user(user_id, {"usage_reminder_sent_on": _as_yyyy_mm_dd(sent_on)})
+
+
+# PATCH users.last_food_logged_on = логическая дата YYYY-MM-DD после INSERT еды.
+# Используется insert_food_log_from_result в main.py (usage-reminder без N+1).
+def mark_last_food_logged_on(user_id: int, logged_date: str) -> dict[str, Any]:
+    return update_user(
+        user_id, {"last_food_logged_on": _as_yyyy_mm_dd(logged_date)}
+    )
 
 
 # Список пользователей с включённым usage-reminder (пагинация page).
@@ -369,6 +394,33 @@ def list_users_with_usage_reminder(*, page_size: int = 200) -> list[dict[str, An
             user = _normalize_user(row)
             if user.get("usage_reminder_enabled"):
                 out.append(user)
+        if len(rows) < page_size:
+            break
+        page += 1
+        if page > 500:
+            break
+    return out
+
+
+# Все users (пагинация page) — для фонового reminders_maintenance без per-user GET.
+# Используется _collect_missed_reminder_targets в main.py.
+def list_all_users(*, page_size: int = 200) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        payload = call_api(
+            "GET",
+            records_url(TABLE_USERS),
+            query={
+                "pageSize": str(page_size),
+                "page": str(page),
+            },
+        )
+        rows = _list_records(payload)
+        for row in rows:
+            if "id" not in row:
+                continue
+            out.append(_normalize_user(row))
         if len(rows) < page_size:
             break
         page += 1

@@ -751,6 +751,7 @@ def update_food_log(
 
 
 # INSERT food_logs после ✅ распознавания (emoji → details_json).
+# Пишет users.last_food_logged_on = logged_date (usage-reminder без N+1 к food_logs).
 # Используется _on_food_saved.
 def insert_food_log_from_result(
     user_id: int, result: Any, logged_date: str
@@ -760,7 +761,7 @@ def insert_food_log_from_result(
         details = result.model_dump()
     else:
         details = dict(result) if isinstance(result, dict) else {}
-    return db.insert_food_log(
+    row = db.insert_food_log(
         user_id,
         title=str(getattr(result, "dish", None) or details.get("dish") or "Блюдо"),
         calories=int(getattr(result, "calories", 0) or 0),
@@ -771,6 +772,15 @@ def insert_food_log_from_result(
         logged_date=logged_date,
         details_json=details,
     )
+    try:
+        db.mark_last_food_logged_on(user_id, logged_date)
+        _patch_user_cache(user_id, {"last_food_logged_on": str(logged_date)})
+    except Exception as e:
+        report_error_auto(
+            f"mark_last_food_logged_on failed user_id={user_id}: {e}",
+            exc=e,
+        )
+    return row
 
 
 # Обновление day_change_hour в users + optimistic patch кэша.
@@ -991,12 +1001,16 @@ def _patch_reminders_parallel(
 # Дата сброса хранится в .reminder_day_keys.json — переживает рестарт.
 # Первый контакт за процесс/в файле: только сид даты, флаги не трогаем.
 # rows — уже загруженный список (чтобы не делать второй GET). Возвращает актуальный list.
+# user — опционально уже загруженный профиль (maintenance без повторного GET).
 # Используется trigger_reminders_for_food и check_missed_reminders.
 def _reset_reminder_triggers_if_new_day(
-    user_id: int, rows: list[dict[str, Any]]
+    user_id: int,
+    rows: list[dict[str, Any]],
+    *,
+    user: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    user = get_user(user_id)
-    today = logical_today(user)
+    profile = user if user is not None else get_user(user_id)
+    today = logical_today(profile)
     with _reminder_day_reset_lock:
         prev = _reminder_day_reset.get(user_id)
         if prev is None:
@@ -1022,10 +1036,13 @@ def _reset_reminder_triggers_if_new_day(
 
 
 # Пользователь «заморожен» по last_active_at (нет активности > N дней).
+# user — опционально уже загруженный профиль (maintenance без GET).
 # Используется proactive/missed-уведомлениями; food-триггер обычно идёт при визите.
-def reminders_frozen(user_id: int) -> bool:
-    user = get_user(user_id)
-    last = int(user.get("last_active_at") or 0)
+def reminders_frozen(
+    user_id: int, *, user: dict[str, Any] | None = None
+) -> bool:
+    profile = user if user is not None else get_user(user_id)
+    last = int(profile.get("last_active_at") or 0)
     if last <= 0:
         return False
     return (time.time() - last) > REMINDER_FREEZE_AFTER_DAYS * 86400
@@ -1048,8 +1065,8 @@ def trigger_reminders_for_food(
 ) -> list[dict[str, Any]]:
     touch_user_activity(user_id)
     rows = get_reminders(user_id)
-    rows = _reset_reminder_triggers_if_new_day(user_id, rows)
     user = get_user(user_id)
+    rows = _reset_reminder_triggers_if_new_day(user_id, rows, user=user)
     now_hm = datetime.now(ZoneInfo(user["timezone"])).strftime("%H:%M")
     kcal = int(calories or 0)
     triggered: list[dict[str, Any]] = []
@@ -1087,13 +1104,17 @@ def check_missed_reminders(user_id: int) -> list[dict[str, Any]]:
 
 
 # Ядро missed-check по уже загруженным rows (+ сброс суток).
+# user — опционально уже загруженный профиль (maintenance без GET).
 # Используется check_missed_reminders и _collect_missed_reminder_targets.
 def _check_missed_reminders_for_rows(
-    user_id: int, rows: list[dict[str, Any]]
+    user_id: int,
+    rows: list[dict[str, Any]],
+    *,
+    user: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    rows = _reset_reminder_triggers_if_new_day(user_id, rows)
-    user = get_user(user_id)
-    now_hm = datetime.now(ZoneInfo(user["timezone"])).strftime("%H:%M")
+    profile = user if user is not None else get_user(user_id)
+    rows = _reset_reminder_triggers_if_new_day(user_id, rows, user=profile)
+    now_hm = datetime.now(ZoneInfo(profile["timezone"])).strftime("%H:%M")
     missed: list[dict[str, Any]] = []
     mark_ids: list[int] = []
     for row in rows:
@@ -4195,8 +4216,9 @@ async def on_survey_pin_done(callback: CallbackQuery, state: FSMContext) -> None
 #endregion
 
 #region Usage-reminder (фон: нет еды до 13:00)
-# Кандидаты на напоминание: enabled, локальное время ≥ 13:00, ещё не слали
-# сегодня, food_logs за логический день пусты. Sync — вызывается из to_thread.
+# Кандидаты: enabled, локальное время ≥ 13:00, ещё не слали сегодня,
+# last_food_logged_on != логический today. Sync — из to_thread.
+# Без N+1 к food_logs: флаг пишется при INSERT еды.
 # Используется usage_reminder_loop.
 def _collect_usage_reminder_targets() -> list[tuple[int, str]]:
     targets: list[tuple[int, str]] = []
@@ -4215,8 +4237,7 @@ def _collect_usage_reminder_targets() -> list[tuple[int, str]]:
             today = logical_today(user)
             if str(user.get("usage_reminder_sent_on") or "") == today:
                 continue
-            logs = get_food_logs_for_date(int(user["id"]), today)
-            if logs:
+            if str(user.get("last_food_logged_on") or "") == today:
                 continue
             targets.append((int(user["id"]), today))
         except Exception as e:
@@ -4267,8 +4288,8 @@ def format_missed_reminder_text(row: dict[str, Any]) -> str:
     )
 
 
-# Тик: сброс is_triggered_today по логическим суткам + список пропущенных окон.
-# Sync — из to_thread. Возвращает [(user_id, reminder_row), ...].
+# Тик: list_all_reminders + list_all_users (без per-user GET) → сброс суток
+# и список пропущенных окон. Sync — из to_thread.
 # Используется reminders_maintenance_loop.
 def _collect_missed_reminder_targets() -> list[tuple[int, dict[str, Any]]]:
     try:
@@ -4276,6 +4297,12 @@ def _collect_missed_reminder_targets() -> list[tuple[int, dict[str, Any]]]:
     except Exception as e:
         report_error_auto(f"list_all_reminders failed: {e}", exc=e)
         return []
+    try:
+        users_by_id = {int(u["id"]): u for u in db.list_all_users()}
+    except Exception as e:
+        report_error_auto(f"list_all_users failed: {e}", exc=e)
+        return []
+
     by_user: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for row in all_rows:
         uid = int(row.get("user_id") or 0)
@@ -4284,12 +4311,15 @@ def _collect_missed_reminder_targets() -> list[tuple[int, dict[str, Any]]]:
 
     targets: list[tuple[int, dict[str, Any]]] = []
     for user_id, rows in by_user.items():
+        user = users_by_id.get(user_id)
+        if user is None:
+            continue
         try:
-            if reminders_frozen(user_id):
+            if reminders_frozen(user_id, user=user):
                 # Всё равно сбрасываем сутки (флаги), но не шлём missed.
-                _reset_reminder_triggers_if_new_day(user_id, rows)
+                _reset_reminder_triggers_if_new_day(user_id, rows, user=user)
                 continue
-            missed = _check_missed_reminders_for_rows(user_id, rows)
+            missed = _check_missed_reminders_for_rows(user_id, rows, user=user)
             for row in missed:
                 targets.append((user_id, row))
         except UserNotRegisteredError:

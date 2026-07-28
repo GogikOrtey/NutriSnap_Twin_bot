@@ -64,11 +64,11 @@ main.py
 - Дневник / выгрузка / настройки / reminders — через обёртки `get_user` (кэш), `get_food_logs_*`, `set_*` (+ invalidate), `add_reminder`, … → `db_nocodb`.
 - Кэш `users` в `main.py`: `_user_cache` по telegram_id; `set_*` / `set_profile` — optimistic `_patch_user_cache` / `_put_user_cache` (без лишнего GET); `invalidate_user_cache` — fallback если кэша ещё нет. Singleflight + `_user_gen` для гонок.
 - Меньше roundtrip: `trigger_reminders_for_food` — один list + параллельные PATCH; `show_settings` — user∥reminders; toggle/delete reminder и delete food_log из FSM без ownership-GET; списки reminders/food_logs в FSM на пагинации.
-- После ✅ еды: `_on_food_saved` → `insert_food_log_from_result` (emoji в `details_json`) → `trigger_reminders_for_food`.
+- После ✅ еды: `_on_food_saved` → `insert_food_log_from_result` (emoji в `details_json` + PATCH `users.last_food_logged_on`) → `trigger_reminders_for_food`.
 - Дневник «✏️ Изменить блюдо»: выбор номера → свободный текст → Gemini (`analyze_food_log_edit`) → `update_food_log` + сообщение об успехе. Удаление — сразу DELETE + «✅ Блюдо удалено».
 - `_on_survey_complete`: сразу текст про usage-reminder + inline «🟩 Хорошо»; `set_profile` стартует параллельно (`_survey_profile_saves`). По кнопке — await upsert → напоминание закрепить/положить в важную папку (`SURVEY_PIN_REMINDER_TEXT`) с inline «Жду выполнения (15)»…«(1)» → «Готово» (клик во время отсчёта игнорируется) → «всё настроено» + `show_recognize`.
-- Usage-reminder: если `usage_reminder_enabled` и до 13:00 (TZ юзера) нет `food_logs` за логический день — фоновый `usage_reminder_loop` (раз в час, старт sleep 40 с — оффсет от maintenance) шлёт сообщение и пишет `usage_reminder_sent_on`. Вкл/выкл: Настройки → Напоминания → «📲 Напоминание использования бота».
-- Reminders maintenance (`reminders_maintenance_loop`, раз в час, старт sleep 25 с): сброс `is_triggered_today` при смене логических суток (`day_change_hour` + TZ); ключ даты в `.reminder_day_keys.json` (переживает рестарт). Пропущенные окна (`check_missed_reminders`): `now > time_end`, ещё не triggered, не frozen → «⏰ Напоминание пропущено» + mark triggered. Почасовой шаг из‑за разных TZ пользователей.
+- Usage-reminder: если `usage_reminder_enabled` и до 13:00 (TZ юзера) `last_food_logged_on` ≠ логический today — фоновый `usage_reminder_loop` (раз в час, старт sleep 40 с) шлёт сообщение и пишет `usage_reminder_sent_on`. Тик: только `list_users_with_usage_reminder` (без N+1 к food_logs). Вкл/выкл: Настройки → Напоминания → «📲 Напоминание использования бота».
+- Reminders maintenance (`reminders_maintenance_loop`, раз в час, старт sleep 25 с): `list_all_reminders` + `list_all_users` (без per-user GET) → сброс `is_triggered_today` при смене логических суток; ключ даты в `.reminder_day_keys.json`. Пропущенные окна: `now > time_end`, ещё не triggered, не frozen → «⏰ Напоминание пропущено» + mark triggered.
 - Профиль: «🔄 Обновить данные пользователя» → `start_initial_survey`. Смена goal → пересчёт ккал через `resolve_recommended_calories` (Mifflin–St Jeor + Gemini fallback).
 - ReplyKeyboard / Inline / логическая дата / FAQ / SMTP feedback — без изменений UX.
 - `main()`: `install_error_email_hooks` + `attach_asyncio_error_handler` + `usage_reminder_loop` + `reminders_maintenance_loop` перед polling.
@@ -87,7 +87,7 @@ main.py
 
 - Транспорт: `urllib` + `xc-token` + UTF-8 JSON; `NocoDBError` при HTTP ≠ 2xx.
 - Table IDs: users=`meooj41uwpyrx9t`, food_logs=`mqhuz4edun8xpdc`, reminders=`m04n35tamrsu1wn`.
-- CRUD: `get_user` / `create_user` / `update_user` / `delete_user` / `upsert_profile`; food_logs list/insert/`update_food_log`/delete; reminders CRUD + toggle/snooze/mark_triggered + `list_all_reminders`; usage-reminder: `set_usage_reminder_enabled` / `mark_usage_reminder_sent` / `list_users_with_usage_reminder`.
+- CRUD: `get_user` / `create_user` / `update_user` / `delete_user` / `upsert_profile`; food_logs list/insert/`update_food_log`/delete; reminders CRUD + toggle/snooze/mark_triggered + `list_all_reminders`; usage-reminder: `set_usage_reminder_enabled` / `mark_usage_reminder_sent` / `mark_last_food_logged_on` / `list_users_with_usage_reminder` / `list_all_users`.
 - Связь владельца: поле Link `users: {id: telegram_id}` (не колонка `user_id`).
 - `sort` v3: JSON `[{"field":"…","direction":"asc"}]`.
 - `emoji` только внутри `details_json`; при чтении поднимается в плоское поле для UI.
@@ -173,7 +173,8 @@ main.py
 | `last_active_at` | BIGINT | Unix time последней активности (заморозка >3 дней) |
 | `created_at` | BIGINT | Unix time регистрации |
 | `usage_reminder_enabled` | BOOLEAN (default True) | Напоминание «нет еды до 13:00» |
-| `usage_reminder_sent_on` | VARCHAR(10) | Дата YYYY-MM-DD последней отправки usage-reminder |
+| `usage_reminder_sent_on` | DATE / VARCHAR | Дата YYYY-MM-DD последней отправки usage-reminder |
+| `last_food_logged_on` | DATE | Логическая дата YYYY-MM-DD последней зафиксированной еды (usage-reminder без N+1) |
 
 ### Таблица `food_logs` (подтверждённые приёмы пищи)
 
