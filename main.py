@@ -15,7 +15,7 @@ FAQ в настройках — обзор возможностей и отве�
 ----------------
 1. Импорты, .env, константы кнопок, MenuFlow.
 2. Хранилище NocoDB (db_nocodb): users (кэш по telegram_id + singleflight) /
-   food_logs / reminders.
+   food_logs / reminders. Sync-HTTP из async — через run_db (asyncio.to_thread).
 3. SMTP обратной связи (send_feedback_email) + форматтеры / Reply-клавиатуры.
 4. UI-хелперы: Reply → новое сообщение; Inline дневника → edit; чистка «Выберите действие:».
 5. Router меню + хендлеры; /start → опрос или меню по БД; on_food_saved → food_logs + reminders.
@@ -52,7 +52,7 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from zoneinfo import ZoneInfo
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
@@ -574,6 +574,14 @@ _user_gen: dict[int, int] = {}
 _user_inflight: dict[int, Future[dict[str, Any] | None]] = {}
 _user_inflight_gen: dict[int, int] = {}
 _user_cache_lock = threading.Lock()
+
+_T = TypeVar("_T")
+
+
+# Выполняет sync-вызов NocoDB (urllib) вне event loop — не блокирует polling.
+# Используется всеми async-хендлерами/экранами вместо прямого get_user/get_food_logs/…
+async def run_db(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+    return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 # Профиль отсутствует в NocoDB — пользователь ещё не прошёл опрос / не в БД.
@@ -1953,10 +1961,10 @@ async def show_main_menu(
     stale_ids = await pop_action_prompt_ids(state)
     await state.clear()
     await state.update_data(diary_offset=0, export_return="main", menu_screen="main")
-    user = get_user(uid)
+    user = await run_db(get_user, uid)
     user_id = uid
     today = logical_today(user)
-    logs = get_food_logs_for_date(user_id, today)
+    logs = await run_db(get_food_logs_for_date, user_id, today)
     text = format_day_card(
         user,
         today,
@@ -2025,9 +2033,9 @@ async def refresh_main_menu_card(
 ) -> None:
     await state.clear()
     await state.update_data(diary_offset=0, export_return="main", menu_screen="main")
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     today = logical_today(user)
-    logs = get_food_logs_for_date(user_id, today)
+    logs = await run_db(get_food_logs_for_date, user_id, today)
     text = format_day_card(
         user,
         today,
@@ -2138,10 +2146,10 @@ async def show_diary(
         menu_screen="diary",
     )
     uid = user_id if user_id is not None else (message.from_user.id if message.from_user else 0)
-    user = get_user(uid)
+    user = await run_db(get_user, uid)
     user_id = uid
     logged_date = logical_date_with_offset(user, offset)
-    logs = get_food_logs_for_date(user_id, logged_date)
+    logs = await run_db(get_food_logs_for_date, user_id, logged_date)
     is_today = offset == 0
     title = f"📒 <b>Дневник питания</b> — {logged_date}"
     text = format_day_card(
@@ -2193,12 +2201,12 @@ async def show_settings(message: Message, state: FSMContext) -> None:
     await state.set_state(None)
     await state.update_data(export_return="settings", menu_screen="settings")
     user_id = message.from_user.id if message.from_user else 0
-    # user и reminders независимы по user_id — один roundtrip-стенд вместо двух.
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        fut_user = pool.submit(get_user, user_id)
-        fut_rems = pool.submit(get_reminders, user_id)
-        user = fut_user.result()
-        rem_count = len(fut_rems.result())
+    # user и reminders независимы — параллельно вне event loop.
+    user, rems = await asyncio.gather(
+        run_db(get_user, user_id),
+        run_db(get_reminders, user_id),
+    )
+    rem_count = len(rems)
     text = (
         "⚙️ Настройки\n"
         "\n"
@@ -2333,7 +2341,7 @@ async def show_usage_reminder_settings(
     await state.set_state(None)
     await state.update_data(menu_screen="usage_reminder")
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     enabled = bool(user.get("usage_reminder_enabled", True))
     status = "включено ✅" if enabled else "выключено ⏸"
     text = (
@@ -2358,7 +2366,7 @@ async def notify_reminders_after_food(
     bot: Bot,
     chat_id: int,
 ) -> None:
-    triggered = trigger_reminders_for_food(user_id, calories)
+    triggered = await run_db(trigger_reminders_for_food, user_id, calories)
     for row in triggered:
         await bot.send_message(
             chat_id,
@@ -2373,7 +2381,7 @@ async def show_profile(message: Message, state: FSMContext) -> None:
     await state.set_state(None)
     await state.update_data(menu_screen="profile")
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     text = (
         "👤 Данные профиля\n"
         "\n"
@@ -2511,9 +2519,9 @@ async def _on_food_saved(
     chat_id: int,
 ) -> None:
     try:
-        user = get_user(user_id)
+        user = await run_db(get_user, user_id)
         logged_date = logical_today(user)
-        insert_food_log_from_result(user_id, result, logged_date)
+        await run_db(insert_food_log_from_result, user_id, result, logged_date)
     except Exception as e:
         is_ext = report_error_auto(
             f"food_logs insert failed user_id={user_id}: {e}",
@@ -2541,7 +2549,7 @@ async def _on_survey_complete(
     )
 
     async def _save_profile() -> None:
-        await asyncio.to_thread(
+        await run_db(
             set_profile,
             user_id,
             first_name=str(profile["first_name"]),
@@ -2583,7 +2591,7 @@ async def _finish_survey_after_usage_ok(
     if task is None:
         # Повторный клик / рестарт: профиль уже мог сохраниться в фоне.
         try:
-            get_user(user_id)
+            await run_db(get_user, user_id)
         except UserNotRegisteredError:
             await message.answer(
                 "Не удалось сохранить профиль. Нажмите /start и попробуйте ещё раз"
@@ -2730,7 +2738,7 @@ async def dispatch_start(
         await start_initial_survey(message, state)
         return
     try:
-        get_user(uid)
+        await run_db(get_user, uid)
     except UserNotRegisteredError:
         await start_initial_survey(message, state)
         return
@@ -2832,7 +2840,7 @@ async def on_back(message: Message, state: FSMContext) -> None:
     if current == MenuFlow.diary_edit_wait.state:
         # Назад с ввода правки → снова выбор номера блюда.
         user_id = message.from_user.id if message.from_user else 0
-        user = get_user(user_id)
+        user = await run_db(get_user, user_id)
         pick_ids: list[int] = list(data.get("pick_logs") or [])
         cached_rows: list[dict[str, Any]] = list(data.get("pick_log_rows") or [])
         if not pick_ids:
@@ -2844,7 +2852,7 @@ async def on_back(message: Message, state: FSMContext) -> None:
         else:
             offset = int(data.get("diary_offset", 0))
             logged_date = logical_date_with_offset(user, offset)
-            logs = get_food_logs_for_date(user_id, logged_date)
+            logs = await run_db(get_food_logs_for_date, user_id, logged_date)
             id_to_log = {r["id"]: r for r in logs}
             ordered = [id_to_log[i] for i in pick_ids if i in id_to_log]
             await state.update_data(pick_log_rows=logs)
@@ -2904,7 +2912,7 @@ async def on_back(message: Message, state: FSMContext) -> None:
         # Назад с подтверждения удаления → снова карточка напоминания.
         rem_id = int(data.get("rem_edit_id") or 0)
         user_id = message.from_user.id if message.from_user else 0
-        row = get_reminder(user_id, rem_id)
+        row = await run_db(get_reminder, user_id, rem_id)
         if row is None:
             await show_reminders(message, state)
             return
@@ -3040,11 +3048,11 @@ async def on_add_dish(message: Message, state: FSMContext) -> None:
 @menu_router.message(F.text == BTN_EDIT_DISH)
 async def on_edit_dish(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     data = await state.get_data()
     offset = int(data.get("diary_offset", 0))
     logged_date = logical_date_with_offset(user, offset)
-    logs = get_food_logs_for_date(user_id, logged_date)
+    logs = await run_db(get_food_logs_for_date, user_id, logged_date)
     await state.update_data(
         menu_screen="diary",
         pick_logs=[r["id"] for r in logs],
@@ -3175,7 +3183,8 @@ async def on_edit_dish_text(message: Message, state: FSMContext) -> None:
         )
 
         user_id = message.from_user.id if message.from_user else 0
-        updated = update_food_log(
+        updated = await run_db(
+            update_food_log,
             user_id,
             log_id,
             title=title,
@@ -3226,11 +3235,11 @@ async def on_edit_dish_text(message: Message, state: FSMContext) -> None:
 @menu_router.message(F.text == BTN_DELETE_DISH)
 async def on_delete_dish(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     data = await state.get_data()
     offset = int(data.get("diary_offset", 0))
     logged_date = logical_date_with_offset(user, offset)
-    logs = get_food_logs_for_date(user_id, logged_date)
+    logs = await run_db(get_food_logs_for_date, user_id, logged_date)
     await state.update_data(
         menu_screen="diary",
         pick_logs=[r["id"] for r in logs],
@@ -3270,7 +3279,7 @@ async def on_delete_dish_pick(message: Message, state: FSMContext) -> None:
     log_id = pick_ids[idx - 1]
     user_id = message.from_user.id if message.from_user else 0
     # id из своего FSM pick_logs — без лишнего GET владельца.
-    delete_food_log(user_id, log_id, check_owner=False)
+    await run_db(delete_food_log, user_id, log_id, check_owner=False)
     await state.set_state(None)
     await message.answer("✅ Блюдо удалено из дневника")
     await show_diary(message, state)
@@ -3301,7 +3310,7 @@ async def on_dish_pick_page(message: Message, state: FSMContext) -> None:
     await state.update_data(pick_page=page)
 
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     cached_rows: list[dict[str, Any]] = list(data.get("pick_log_rows") or [])
     if cached_rows:
         id_to_log = {r["id"]: r for r in cached_rows}
@@ -3309,7 +3318,7 @@ async def on_dish_pick_page(message: Message, state: FSMContext) -> None:
     else:
         offset = int(data.get("diary_offset", 0))
         logged_date = logical_date_with_offset(user, offset)
-        logs = get_food_logs_for_date(user_id, logged_date)
+        logs = await run_db(get_food_logs_for_date, user_id, logged_date)
         id_to_log = {r["id"]: r for r in logs}
         ordered = [id_to_log[i] for i in pick_ids if i in id_to_log]
         await state.update_data(pick_log_rows=logs)
@@ -3337,9 +3346,9 @@ async def on_dish_pick_page(message: Message, state: FSMContext) -> None:
 async def on_export_today(message: Message, state: FSMContext) -> None:
     await state.update_data(menu_screen="export")
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     day = logical_today(user)
-    logs = get_food_logs_for_date(user_id, day)
+    logs = await run_db(get_food_logs_for_date, user_id, day)
     await send_export_file(
         message, user, logs, f"текущий день ({day})", f"diary_{day}.txt"
     )
@@ -3350,9 +3359,9 @@ async def on_export_today(message: Message, state: FSMContext) -> None:
 async def on_export_yesterday(message: Message, state: FSMContext) -> None:
     await state.update_data(menu_screen="export")
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     day = logical_date_with_offset(user, -1)
-    logs = get_food_logs_for_date(user_id, day)
+    logs = await run_db(get_food_logs_for_date, user_id, day)
     await send_export_file(
         message, user, logs, f"прошлый день ({day})", f"diary_{day}.txt"
     )
@@ -3363,10 +3372,10 @@ async def on_export_yesterday(message: Message, state: FSMContext) -> None:
 async def on_export_week(message: Message, state: FSMContext) -> None:
     await state.update_data(menu_screen="export")
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     date_to = logical_today(user)
     date_from = logical_date_with_offset(user, -6)
-    logs = get_food_logs_range(user_id, date_from, date_to)
+    logs = await run_db(get_food_logs_range, user_id, date_from, date_to)
     await send_export_file(
         message,
         user,
@@ -3398,7 +3407,7 @@ async def on_export_month(message: Message, state: FSMContext) -> None:
 async def on_export_month_pick(message: Message, state: FSMContext) -> None:
     text = message.text or ""
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     if text == BTN_MONTH_0_30:
         start_off, end_off = -29, 0
         title = "последние 30 дней"
@@ -3410,7 +3419,7 @@ async def on_export_month_pick(message: Message, state: FSMContext) -> None:
         title = "от 60 до 90 дней назад"
     date_from = logical_date_with_offset(user, start_off)
     date_to = logical_date_with_offset(user, end_off)
-    logs = get_food_logs_range(user_id, date_from, date_to)
+    logs = await run_db(get_food_logs_range, user_id, date_from, date_to)
     await state.set_state(None)
     await state.update_data(menu_screen="export")
     await send_export_file(
@@ -3468,7 +3477,7 @@ async def on_update_profile_no(message: Message, state: FSMContext) -> None:
 @menu_router.message(F.text == BTN_SET_DAY_HOUR)
 async def on_set_day_hour(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     await state.set_state(MenuFlow.settings_day_hour)
     await state.update_data(menu_screen="settings")
     await replace_ui(
@@ -3495,7 +3504,7 @@ async def on_set_day_hour_value(message: Message, state: FSMContext) -> None:
         await message.answer("Введите целое число часа от 0 до 23")
         return
     user_id = message.from_user.id if message.from_user else 0
-    set_day_change_hour(user_id, int(text))
+    await run_db(set_day_change_hour, user_id, int(text))
     await state.set_state(None)
     await replace_ui(
         message,
@@ -3663,7 +3672,7 @@ async def on_feedback_photo(message: Message, state: FSMContext) -> None:
 @menu_router.message(F.text == BTN_SET_GOAL)
 async def on_set_goal(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     await state.set_state(MenuFlow.settings_goal)
     await state.update_data(menu_screen="profile")
     await replace_ui(
@@ -3682,7 +3691,7 @@ async def on_set_goal(message: Message, state: FSMContext) -> None:
 @menu_router.message(MenuFlow.settings_goal, F.text.in_(set(GOAL_BY_BTN)))
 async def on_set_goal_value(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     old_goal = user.get("goal", "")
     new_goal = GOAL_BY_BTN[message.text or ""]
 
@@ -3690,7 +3699,7 @@ async def on_set_goal_value(message: Message, state: FSMContext) -> None:
         await show_profile(message, state)
         return
 
-    set_goal(user_id, new_goal)
+    await run_db(set_goal, user_id, new_goal)
     await state.set_state(MenuFlow.settings_goal_recalc)
     await state.update_data(menu_screen="profile_goal_recalc")
     await replace_ui(
@@ -3709,7 +3718,7 @@ async def on_set_goal_value(message: Message, state: FSMContext) -> None:
 @menu_router.message(MenuFlow.settings_goal_recalc, F.text == BTN_CONFIRM_RECALC_YES)
 async def on_goal_recalc_yes(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     survey_data = {
         "survey_gender": str(user.get("gender") or "male"),
         "survey_age": int(user.get("age") or 0),
@@ -3721,7 +3730,7 @@ async def on_goal_recalc_yes(message: Message, state: FSMContext) -> None:
     wait_msg = await message.answer("⏳ Пересчитываю целевые ккал…")
     try:
         calories = await asyncio.to_thread(resolve_recommended_calories, survey_data)
-        set_daily_calories(user_id, calories)
+        await run_db(set_daily_calories, user_id, calories)
     except Exception as e:
         is_ext = report_error_auto(
             f"goal recalc failed user_id={user_id}: {e}",
@@ -3750,7 +3759,7 @@ async def on_goal_recalc_yes(message: Message, state: FSMContext) -> None:
         state,
         f"✅ Целевые ккал обновлены: <b>{calories}</b> ккал/сутки\n"
         "\n"
-        f"{format_profile_summary(get_user(user_id))}\n"
+        f"{format_profile_summary(await run_db(get_user, user_id))}\n"
         "\n"
         "Выберите, что изменить:",
         reply_markup=kb_profile(),
@@ -3768,7 +3777,7 @@ async def on_goal_recalc_no(message: Message, state: FSMContext) -> None:
 @menu_router.message(F.text == BTN_SET_CALORIES)
 async def on_set_calories(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     await state.set_state(MenuFlow.settings_calories)
     await state.update_data(menu_screen="profile")
     await replace_ui(
@@ -3790,7 +3799,7 @@ async def on_set_calories_value(message: Message, state: FSMContext) -> None:
         await message.answer("Введите целое положительное число ккал")
         return
     user_id = message.from_user.id if message.from_user else 0
-    set_daily_calories(user_id, int(text))
+    await run_db(set_daily_calories, user_id, int(text))
     await show_profile(message, state)
 #endregion
 
@@ -3798,7 +3807,7 @@ async def on_set_calories_value(message: Message, state: FSMContext) -> None:
 # Открыть раздел «Напоминания и Витамины».
 @menu_router.message(F.text == BTN_SET_REMINDERS)
 async def on_set_reminders(message: Message, state: FSMContext) -> None:
-    touch_user_activity(message.from_user.id if message.from_user else 0)
+    await run_db(touch_user_activity, message.from_user.id if message.from_user else 0)
     await show_reminders(message, state)
 
 
@@ -3816,10 +3825,10 @@ async def on_usage_reminder_toggle(message: Message, state: FSMContext) -> None:
     if data.get("menu_screen") != "usage_reminder":
         return
     user_id = message.from_user.id if message.from_user else 0
-    user = get_user(user_id)
+    user = await run_db(get_user, user_id)
     new_enabled = not bool(user.get("usage_reminder_enabled", True))
     try:
-        await asyncio.to_thread(set_usage_reminder_enabled, user_id, new_enabled)
+        await run_db(set_usage_reminder_enabled, user_id, new_enabled)
     except Exception as e:
         is_ext = report_error_auto(
             f"set_usage_reminder_enabled failed user_id={user_id}: {e}",
@@ -3915,7 +3924,7 @@ async def on_rem_add_min_cal(message: Message, state: FSMContext) -> None:
         await show_reminders(message, state)
         return
     user_id = message.from_user.id if message.from_user else 0
-    row = add_reminder(user_id, title, time_start, time_end, min_cal)
+    row = await run_db(add_reminder, user_id, title, time_start, time_end, min_cal)
     await state.set_state(None)
     await state.update_data(rem_draft={}, menu_screen="reminders")
     await replace_ui(
@@ -3934,7 +3943,7 @@ async def on_rem_add_min_cal(message: Message, state: FSMContext) -> None:
 @menu_router.message(F.text == BTN_REM_LIST)
 async def on_rem_list(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else 0
-    rows = get_reminders(user_id)
+    rows = await run_db(get_reminders, user_id)
     if not rows:
         await replace_ui(
             message,
@@ -3985,7 +3994,7 @@ async def on_rem_list_page(message: Message, state: FSMContext) -> None:
     rows: list[dict[str, Any]] = list(data.get("rem_rows") or [])
     if not rows:
         user_id = message.from_user.id if message.from_user else 0
-        rows = get_reminders(user_id)
+        rows = await run_db(get_reminders, user_id)
         await state.update_data(rem_rows=rows)
     await replace_ui(
         message,
@@ -4019,7 +4028,7 @@ async def on_rem_list_pick(message: Message, state: FSMContext) -> None:
     cached: list[dict[str, Any]] = list(data.get("rem_rows") or [])
     row = next((r for r in cached if int(r.get("id") or 0) == rem_id), None)
     if row is None:
-        row = get_reminder(user_id, rem_id)
+        row = await run_db(get_reminder, user_id, rem_id)
     if row is None:
         await show_reminders(message, state)
         return
@@ -4046,7 +4055,8 @@ async def on_rem_toggle(message: Message, state: FSMContext) -> None:
     base = dict(data.get("rem_edit_row") or {})
     new_active = not bool(base.get("is_active", True))
     # id из FSM — один PATCH без GET владельца и без повторного GET карточки.
-    row = set_reminder_active(
+    row = await run_db(
+        set_reminder_active,
         user_id, rem_id, new_active, check_owner=False
     )
     if row is None:
@@ -4080,7 +4090,7 @@ async def on_rem_delete_ask(message: Message, state: FSMContext) -> None:
     row = dict(data.get("rem_edit_row") or {})
     if not row:
         user_id = message.from_user.id if message.from_user else 0
-        fetched = get_reminder(user_id, rem_id)
+        fetched = await run_db(get_reminder, user_id, rem_id)
         row = dict(fetched or {})
     if not row:
         await show_reminders(message, state)
@@ -4109,7 +4119,7 @@ async def on_rem_delete_yes(message: Message, state: FSMContext) -> None:
     row = dict(data.get("rem_edit_row") or {})
     title = str(row.get("title") or "")
     # id из FSM — один DELETE без GET.
-    delete_reminder(user_id, rem_id, check_owner=False)
+    await run_db(delete_reminder, user_id, rem_id, check_owner=False)
     await state.set_state(None)
     await state.update_data(
         menu_screen="reminders", rem_edit_id=None, rem_edit_row=None
@@ -4130,7 +4140,7 @@ async def on_rem_delete_no(message: Message, state: FSMContext) -> None:
     row = dict(data.get("rem_edit_row") or {})
     if not row:
         user_id = message.from_user.id if message.from_user else 0
-        fetched = get_reminder(user_id, rem_id)
+        fetched = await run_db(get_reminder, user_id, rem_id)
         row = dict(fetched or {})
     if not row:
         await show_reminders(message, state)
@@ -4153,7 +4163,7 @@ async def on_rem_snooze(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
     user_id = callback.from_user.id
-    ok = snooze_reminder(user_id, int(raw))
+    ok = await run_db(snooze_reminder, user_id, int(raw))
     await callback.answer("Перенесено на следующую еду" if ok else "Уже недоступно")
     if callback.message:
         try:
@@ -4264,7 +4274,7 @@ async def usage_reminder_loop(bot: Bot) -> None:
                         get_usage_reminder_notify_text(),
                         parse_mode="HTML",
                     )
-                    await asyncio.to_thread(mark_usage_reminder_sent, user_id, today)
+                    await run_db(mark_usage_reminder_sent, user_id, today)
                 except Exception as e:
                     report_console_error(
                         f"usage reminder send failed user_id={user_id}: {e}",

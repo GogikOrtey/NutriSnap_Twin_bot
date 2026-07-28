@@ -61,7 +61,7 @@ main.py
 - Прочие необработанные update-ошибки → `@dp.error`: внешние (NocoDB/Gemini/сеть) → `TECH_ISSUES_USER_TEXT` + письмо `🟧🍎`; иначе `report_console_error` (`🟨⬛🍎`).
 - `/start` (есть профиль) → «🏠 Главный экран | Сегодня» из реальных `food_logs`.
 - Главный экран idle: `show_main_menu` / `refresh_main_menu_card` ставят таймер `MAIN_IDLE_REFRESH_SEC` (15 мин); если всё ещё `menu_screen=main` и тот же `ui_message_id` — `edit_message_reply_markup` с inline «🔄 Обновить» (`CALLBACK_MAIN_REFRESH`). Клик → пересборка карточки «сегодня» на месте и новый таймер. Задачи в `_main_idle_refresh_tasks`.
-- Дневник / выгрузка / настройки / reminders — через обёртки `get_user` (кэш), `get_food_logs_*`, `set_*` (+ invalidate), `add_reminder`, … → `db_nocodb`.
+- Дневник / выгрузка / настройки / reminders — через обёртки `get_user` (кэш), `get_food_logs_*`, `set_*` (+ invalidate), `add_reminder`, … → `db_nocodb`. Из async-хендлеров — только через `run_db(...)` (`asyncio.to_thread`), чтобы urllib NocoDB не блокировал event loop.
 - Кэш `users` в `main.py`: `_user_cache` по telegram_id; `set_*` / `set_profile` — optimistic `_patch_user_cache` / `_put_user_cache` (без лишнего GET); `invalidate_user_cache` — fallback если кэша ещё нет. Singleflight + `_user_gen` для гонок.
 - Меньше roundtrip: `trigger_reminders_for_food` — один list + параллельные PATCH; `show_settings` — user∥reminders; toggle/delete reminder и delete food_log из FSM без ownership-GET; списки reminders/food_logs в FSM на пагинации.
 - После ✅ еды: `_on_food_saved` → `insert_food_log_from_result` (emoji в `details_json` + PATCH `users.last_food_logged_on`) → `trigger_reminders_for_food`.
