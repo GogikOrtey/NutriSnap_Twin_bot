@@ -26,12 +26,17 @@ NutriSnap_Twin_bot/
 ├── requirements.txt       # pip-зависимости (в т.ч. aiohttp-socks)
 ├── Dockerfile             # Образ Python 3.10-slim → python main.py
 ├── docker-compose.yml     # Сервис bot: env_file .env, volumes logs + day keys
+├── docker-compose.vps.yml # VPS override: network_mode host (mihomo + /etc/hosts)
+├── deploy.sh              # На VPS: git reset origin/build + compose up --build -d
+├── deploy_to_build.cmd    # Локально: merge в build, push → триггер Actions
+├── .github/workflows/deploy.yml  # push build → SSH → deploy.sh
 ├── .dockerignore          # .env, logs, Старое/, тесты, *.md — вне контекста сборки
 ├── .env                   # Секреты (не в git; в образ не копируется)
 ├── .env.example           # Шаблон переменных окружения (+ LOG_LEVEL)
 ├── .gitignore             # в т.ч. logs/, *.log
 ├── logs/                  # bot.log (+ ротация; не в git; volume в compose)
 ├── .reminder_day_keys.json  # Локальный ключ сброса is_triggered_today (не в git; volume)
+├── cursorcontext_on_SkyNode.md  # SSH/VPS шпаргалка (SkyNode)
 ├── backlog.md             # Личный бэклог (не править агентом)
 └── Старое/                # Устаревшие эксперименты (не использовать как основу)
 ```
@@ -226,21 +231,25 @@ main.py
 - `python-dotenv`, `google-genai`, `httpx`, `pydantic`, `aiogram`, `aiohttp-socks`, `Pillow`, `timezonefinder`, `geopy`
 - Список в `requirements.txt`.
 
-## Docker (локально Windows / далее VPS)
+## Docker (локально Windows / VPS)
 
 - `Dockerfile`: `python:3.10-slim` (паритет с локальной 3.10.10), `CMD ["python", "main.py"]`, `PYTHONUNBUFFERED=1`.
 - `docker-compose.yml`: сервис `bot`, `env_file: .env`, volumes `./logs` и `./.reminder_day_keys.json` (файл на хосте должен существовать до первого `up`).
-- Локальный тест (Docker Desktop / WSL2): `docker compose up --build` из корня. Прокси в `.env` пустой — «Telegram напрямую».
-- Логи: терминал / `docker compose logs -f` / `./logs/bot.log`. Стоп: `Ctrl+C`, затем при необходимости `docker compose down`.
-- Не гонять параллельно `python main.py` и контейнер с тем же `TELEGRAM_BOT_API_KEY`.
-- На VPS позже: mihomo + `OUTBOUND_HTTPS_PROXY` (sidecar в compose пока не включён).
+- `docker-compose.vps.yml`: `network_mode: host` — контейнер видит mihomo `127.0.0.1:7890` и `/etc/hosts` хоста.
+- Локальный тест: `docker compose up --build` (без vps-файла). Прокси в `.env` пустой.
+- VPS: `docker compose -f docker-compose.yml -f docker-compose.vps.yml up --build -d`.
+- Не гонять параллельно локальный контейнер/процесс и VPS с тем же `TELEGRAM_BOT_API_KEY` (иначе TelegramConflictError).
 
-## Деплой VPS (Selectel / SkyNode-бот)
+## Деплой SkyNode (ветка `build` + GitHub Actions)
 
-- Перед стартом бота: mihomo на `127.0.0.1:7890` (`~/proxy/start_mihomo.sh`).
-- В `.env` на VPS: `OUTBOUND_HTTPS_PROXY=http://127.0.0.1:7890` (и/или TELEGRAM_/GEMINI_ алиасы).
-- Telegram + Gemini → прокси; NocoDB / SMTP Yandex / Nominatim → напрямую.
-- Не включать TUN / unit-wide `HTTP_PROXY` на процесс бота.
+- Каталог на VPS: `~/NutriSnap_Twin_bot` (ветка `build`).
+- Локально: `deploy_to_build.cmd` → commit (если нужно) → merge в `build` → `git push origin build` → обратно на рабочую ветку.
+- Actions (`.github/workflows/deploy.yml`): `push` на `build` → SSH (`appleboy/ssh-action`) → `bash deploy.sh`.
+- Secrets: `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`, `VPS_DEPLOY_PATH` (`/home/gogortey/NutriSnap_Twin_bot`).
+- Ключи на VPS: `~/.ssh/nutrisnap_github` (deploy key RO → GitHub), `~/.ssh/nutrisnap_gha` (Actions → VM, в `authorized_keys`).
+- Compose plugin без sudo: `~/.docker/cli-plugins/docker-compose`.
+- mihomo: `127.0.0.1:7890`; в `.env` на VPS: `OUTBOUND_HTTPS_PROXY=http://127.0.0.1:7890`.
+- Telegram + Gemini → прокси; NocoDB / SMTP / Nominatim → напрямую. Не ставить unit-wide `HTTP_PROXY` на процесс бота.
 
 ## Планируемое развитие
 
