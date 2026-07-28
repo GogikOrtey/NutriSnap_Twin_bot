@@ -35,6 +35,7 @@ import asyncio
 import html
 import io
 import os
+import random
 import smtplib
 import threading
 import time
@@ -106,8 +107,8 @@ STALE_MESSAGE_MAX_AGE_SEC = 10 * 60
 STALE_RECOVERY_NOTIFY_COOLDOWN_SEC = 60
 # Текст «снова онлайн» (без точки в конце — стиль бота).
 STALE_RECOVERY_TEXT = (
-    "Я был ненадолго офлайн, но уже снова на связи 🙂\n"
-    "Если отправляли что-то, пока меня не было — пришлите ещё раз"
+    "Я был ненадолго офлайн, но уже снова на связи ⭐\n"
+    "Если отправляли что-то пока меня не было — пришлите ещё раз"
 )
 
 # Кнопка возврата в корень — есть в основных разделах.
@@ -195,12 +196,21 @@ SURVEY_USAGE_REMINDER_TEXT = (
     "Работает каждый день; отключить можно в "
     "Настройки → Напоминания → «Напоминание использования бота»"
 )
-USAGE_REMINDER_NOTIFY_TEXT = (
-    "Эй! Сегодня ещё нет ни одной записи о еде 🙂\n"
-    "Если уже поели — загляните и зафиксируйте, это займёт минуту\n"
-    "\n"
-    "Отключить: Настройки → Напоминания → «Напоминание использования бота»"
+USAGE_REMINDER_EMOJIS = (
+    "🍭", "🍬", "🍫", "🥧", "🥘", "🍳", "☕️", "🍖", "🍛", "🍲", "🥪", "🧀", "🍱",
 )
+
+
+# Собирает текст usage-reminder со случайным food-emoji и spoiler-строкой «Отключить…».
+# Используется в usage_reminder_loop при send_message (parse_mode=HTML).
+def get_usage_reminder_notify_text() -> str:
+    emoji = random.choice(USAGE_REMINDER_EMOJIS)
+    return (
+        f"Эй! Сегодня ещё нет ни одной записи о еде {emoji}\n"
+        "Если уже поели — загляните и зафиксируйте, это займёт минуту\n"
+        "\n"
+        "<tg-spoiler>Отключить: Настройки → Напоминания → «Напоминание использования бота»</tg-spoiler>"
+    )
 
 # Памятка экрана «Распознать» — также открывается после завершения первичного опроса.
 RECOGNIZE_HINT_TEXT = (
@@ -3535,7 +3545,11 @@ async def usage_reminder_loop(bot: Bot) -> None:
             targets = await asyncio.to_thread(_collect_usage_reminder_targets)
             for user_id, today in targets:
                 try:
-                    await bot.send_message(user_id, USAGE_REMINDER_NOTIFY_TEXT)
+                    await bot.send_message(
+                        user_id,
+                        get_usage_reminder_notify_text(),
+                        parse_mode="HTML",
+                    )
                     await asyncio.to_thread(mark_usage_reminder_sent, user_id, today)
                 except Exception as e:
                     report_console_error(
