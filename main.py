@@ -22,7 +22,8 @@ FAQ в настройках — обзор возможностей и отве�
 6. UserNotRegisteredError → error-handler → та же ветка, что /start;
    сбои БД/Gemini/сети → TECH_ISSUES_USER_TEXT + письмо 🟧🍎;
    прочие необработанные update-ошибки → report_console_error (🟨⬛🍎).
-7. main() — хуки error_notify + polling + фоновый usage-reminder (13:00);
+7. main() — хуки error_notify + polling + фоновый usage-reminder (13:00)
+   и reminders_maintenance (сброс is_triggered_today + пропущенные окна);
    Telegram-сессия через прокси при TELEGRAM_PROXY / OUTBOUND_HTTPS_PROXY
    (VPS mihomo), иначе напрямую.
 8. DropStaleMessagesMiddleware — сообщения старше 10 мин (очередь после
@@ -34,11 +35,13 @@ from __future__ import annotations
 import asyncio
 import html
 import io
+import json
 import os
 import random
 import smtplib
 import threading
 import time
+from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -46,6 +49,7 @@ from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -81,7 +85,11 @@ from error_notify import (
     report_service_problem,
 )
 from food_recognition import setup_food_recognition
-from initial_survey import setup_initial_survey, start_initial_survey
+from initial_survey import (
+    resolve_recommended_calories,
+    setup_initial_survey,
+    start_initial_survey,
+)
 from proxy_config import get_telegram_proxy
 
 #region Конфиг и тексты кнопок
@@ -375,6 +383,11 @@ REMINDER_WINDOWS: dict[str, tuple[str, str]] = {
 REMINDER_HEARTY_MIN_KCAL = 250
 # Заморозка уведомлений, если пользователь не заходил N дней (users.last_active_at).
 REMINDER_FREEZE_AFTER_DAYS = 3
+# Фоновый тик раз в час: сброс is_triggered_today + «окно пропущено»
+# (разные TZ пользователей — почасовой шаг проще точечных окон).
+REMINDER_MAINTENANCE_INTERVAL_SEC = 3600
+# Файл с последней логической датой сброса флагов (переживает рестарт процесса).
+_REMINDER_DAY_KEYS_PATH = Path(__file__).resolve().parent / ".reminder_day_keys.json"
 
 GOAL_LABELS = {
     "weight_loss": "Похудение",
@@ -477,8 +490,44 @@ class MenuFlow(StatesGroup):
 #endregion
 
 #region Хранилище NocoDB (users / food_logs / reminders)
-# Логическая дата последнего сброса is_triggered_today (process-local, до cron).
-_reminder_day_reset: dict[int, str] = {}
+# Логическая дата последнего сброса is_triggered_today (файл + RAM).
+# Ключ переживает рестарт: иначе mid-day restart сбрасывал бы флаги ошибочно.
+def _load_reminder_day_reset() -> dict[int, str]:
+    try:
+        raw = _REMINDER_DAY_KEYS_PATH.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        out: dict[int, str] = {}
+        for key, value in data.items():
+            try:
+                out[int(key)] = str(value)
+            except (TypeError, ValueError):
+                continue
+        return out
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        report_console_error(f"load reminder day keys failed: {e}", exc=e)
+        return {}
+
+
+_reminder_day_reset: dict[int, str] = _load_reminder_day_reset()
+_reminder_day_reset_lock = threading.Lock()
+
+
+# Пишет _reminder_day_reset на диск (переживает рестарт бота).
+# Используется _reset_reminder_triggers_if_new_day после смены/сида даты.
+def _persist_reminder_day_reset() -> None:
+    try:
+        with _reminder_day_reset_lock:
+            payload = {str(k): v for k, v in _reminder_day_reset.items()}
+        _REMINDER_DAY_KEYS_PATH.write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        report_console_error(f"persist reminder day keys failed: {e}", exc=e)
 # Фоновый upsert профиля после опроса: user_id → Task (пока читают про reminder).
 _survey_profile_saves: dict[int, asyncio.Task[None]] = {}
 
@@ -876,15 +925,28 @@ def _patch_reminders_parallel(
             fut.result()
 
 
-# Сброс is_triggered_today при смене логических суток (process-local дата).
+# Сброс is_triggered_today при смене логических суток (day_change_hour + TZ).
+# Дата сброса хранится в .reminder_day_keys.json — переживает рестарт.
+# Первый контакт за процесс/в файле: только сид даты, флаги не трогаем.
 # rows — уже загруженный список (чтобы не делать второй GET). Возвращает актуальный list.
-# Используется перед проверкой триггеров после сохранения еды.
+# Используется trigger_reminders_for_food и check_missed_reminders.
 def _reset_reminder_triggers_if_new_day(
     user_id: int, rows: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     user = get_user(user_id)
     today = logical_today(user)
-    if _reminder_day_reset.get(user_id) == today:
+    with _reminder_day_reset_lock:
+        prev = _reminder_day_reset.get(user_id)
+        if prev is None:
+            _reminder_day_reset[user_id] = today
+            seed_only = True
+        elif prev == today:
+            return rows
+        else:
+            _reminder_day_reset[user_id] = today
+            seed_only = False
+    if seed_only:
+        _persist_reminder_day_reset()
         return rows
     to_reset = [int(r["id"]) for r in rows if r.get("is_triggered_today")]
     if to_reset:
@@ -893,7 +955,7 @@ def _reset_reminder_triggers_if_new_day(
             {**r, "is_triggered_today": False} if r.get("is_triggered_today") else r
             for r in rows
         ]
-    _reminder_day_reset[user_id] = today
+    _persist_reminder_day_reset()
     return rows
 
 
@@ -952,15 +1014,45 @@ def trigger_reminders_for_food(
     return triggered
 
 
-# 🎈 Заглушка проверки «окно закончилось, еду не залогировали» (будущий cron/job).
-# Сейчас не вызывается — планировщик подключим отдельно.
+# Активные reminders, у которых окно уже закончилось и еда не залогирована
+# (is_triggered_today ещё False). Помечает как triggered, чтобы не слать повторно.
+# Используется фоновым reminders_maintenance_loop.
 def check_missed_reminders(user_id: int) -> list[dict[str, Any]]:
-    # 🎈 SELECT active reminders WHERE now > time_end AND NOT is_triggered_today
-    #    AND user not frozen; затем уведомить «пропущено».
     if reminders_frozen(user_id):
         return []
-    _ = user_id
-    return []
+    rows = get_reminders(user_id)
+    return _check_missed_reminders_for_rows(user_id, rows)
+
+
+# Ядро missed-check по уже загруженным rows (+ сброс суток).
+# Используется check_missed_reminders и _collect_missed_reminder_targets.
+def _check_missed_reminders_for_rows(
+    user_id: int, rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    rows = _reset_reminder_triggers_if_new_day(user_id, rows)
+    user = get_user(user_id)
+    now_hm = datetime.now(ZoneInfo(user["timezone"])).strftime("%H:%M")
+    missed: list[dict[str, Any]] = []
+    mark_ids: list[int] = []
+    for row in rows:
+        if not row.get("is_active"):
+            continue
+        if row.get("is_triggered_today"):
+            continue
+        time_end = str(row.get("time_end") or "")
+        if not time_end or now_hm <= time_end:
+            continue
+        mark_ids.append(int(row["id"]))
+        updated = dict(row)
+        updated["is_triggered_today"] = True
+        missed.append(updated)
+        print(
+            f"reminder missed user_id={user_id} id={updated['id']} "
+            f"title={updated['title']!r} window={row.get('time_start')}-{time_end}",
+            flush=True,
+        )
+    _patch_reminders_parallel(mark_ids, {"is_triggered_today": True})
+    return missed
 #endregion
 
 #region Дата / прогресс / форматтеры
@@ -1482,6 +1574,21 @@ def kb_reminder_notify(reminder_id: int) -> InlineKeyboardMarkup:
                     text="✅ Понятно",
                     callback_data=f"{CALLBACK_REM_OK_PREFIX}{reminder_id}",
                 ),
+            ]
+        ]
+    )
+
+
+# Inline под уведомлением о пропущенном окне напоминания (только закрыть).
+# Используется reminders_maintenance_loop.
+def kb_reminder_missed_ok(reminder_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Понятно",
+                    callback_data=f"{CALLBACK_REM_OK_PREFIX}{reminder_id}",
+                )
             ]
         ]
     )
@@ -2787,20 +2894,10 @@ async def on_update_profile_ask(message: Message, state: FSMContext) -> None:
     )
 
 
-# 🎈 Согласие на перезапуск опроса → заглушка (онбординг подключим позже).
+# Согласие на перезапуск опроса → start_initial_survey (полный онбординг).
 @menu_router.message(F.text == BTN_CONFIRM_UPDATE_YES)
 async def on_update_profile_yes(message: Message, state: FSMContext) -> None:
-    await state.set_state(None)
-    await state.update_data(menu_screen="profile")
-    await replace_ui(
-        message,
-        state,
-        "🔜 Перекидываем вас на первоначальный опрос…\n"
-        "\n"
-        "🎈 Заглушка: сам опрос подключим позже. "
-        "Сейчас вы остаётесь в разделе данных профиля",
-        reply_markup=kb_profile(),
-    )
+    await start_initial_survey(message, state)
 
 
 # Отказ от перезапуска опроса → назад к сводке профиля.
@@ -3050,19 +3147,56 @@ async def on_set_goal_value(message: Message, state: FSMContext) -> None:
     )
 
 
-# 🎈 Согласие на пересчёт ккал после смены типа → заглушка (формулу подключим позже).
+# Согласие на пересчёт ккал после смены типа → Mifflin–St Jeor (+ Gemini fallback).
 @menu_router.message(MenuFlow.settings_goal_recalc, F.text == BTN_CONFIRM_RECALC_YES)
 async def on_goal_recalc_yes(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.id if message.from_user else 0
+    user = get_user(user_id)
+    survey_data = {
+        "survey_gender": str(user.get("gender") or "male"),
+        "survey_age": int(user.get("age") or 0),
+        "survey_height": float(user.get("height") or 0),
+        "survey_weight": float(user.get("weight") or 0),
+        "survey_activity_level": float(user.get("activity_level") or 1.2),
+        "survey_goal": str(user.get("goal") or "maintain"),
+    }
+    wait_msg = await message.answer("⏳ Пересчитываю целевые ккал…")
+    try:
+        calories = await asyncio.to_thread(resolve_recommended_calories, survey_data)
+        set_daily_calories(user_id, calories)
+    except Exception as e:
+        is_ext = report_error_auto(
+            f"goal recalc failed user_id={user_id}: {e}",
+            exc=e,
+        )
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+        if is_ext:
+            await notify_user_tech_issues(message=message)
+        else:
+            await message.answer(
+                "Не удалось пересчитать ккал. Попробуйте ещё раз чуть позже"
+            )
+        await show_profile(message, state)
+        return
+    try:
+        await wait_msg.delete()
+    except Exception:
+        pass
     await state.set_state(None)
     await state.update_data(menu_screen="profile")
     await replace_ui(
         message,
         state,
-        "🔜 Пересчёт целевых ккал…\n"
+        f"✅ Целевые ккал обновлены: <b>{calories}</b> ккал/сутки\n"
         "\n"
-        "🎈 Заглушка: формулу пересчёта подключим позже. "
-        "Сейчас вы остаётесь в разделе данных профиля",
+        f"{format_profile_summary(get_user(user_id))}\n"
+        "\n"
+        "Выберите, что изменить:",
         reply_markup=kb_profile(),
+        parse_mode="HTML",
     )
 
 
@@ -3561,6 +3695,84 @@ async def usage_reminder_loop(bot: Bot) -> None:
         await asyncio.sleep(USAGE_REMINDER_CHECK_INTERVAL_SEC)
 #endregion
 
+#region Reminders maintenance (сброс суток + пропущенные окна)
+# Текст уведомления о пропущенном окне напоминания.
+# Используется reminders_maintenance_loop.
+def format_missed_reminder_text(row: dict[str, Any]) -> str:
+    title = html.escape(str(row.get("title") or "напоминание"))
+    start = html.escape(str(row.get("time_start") or "—"))
+    end = html.escape(str(row.get("time_end") or "—"))
+    return (
+        f"⏰ Напоминание пропущено: <b>{title}</b>\n"
+        f"Окно {start}–{end} закончилось без фиксации еды"
+    )
+
+
+# Тик: сброс is_triggered_today по логическим суткам + список пропущенных окон.
+# Sync — из to_thread. Возвращает [(user_id, reminder_row), ...].
+# Используется reminders_maintenance_loop.
+def _collect_missed_reminder_targets() -> list[tuple[int, dict[str, Any]]]:
+    try:
+        all_rows = db.list_all_reminders()
+    except Exception as e:
+        report_error_auto(f"list_all_reminders failed: {e}", exc=e)
+        return []
+    by_user: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in all_rows:
+        uid = int(row.get("user_id") or 0)
+        if uid:
+            by_user[uid].append(row)
+
+    targets: list[tuple[int, dict[str, Any]]] = []
+    for user_id, rows in by_user.items():
+        try:
+            if reminders_frozen(user_id):
+                # Всё равно сбрасываем сутки (флаги), но не шлём missed.
+                _reset_reminder_triggers_if_new_day(user_id, rows)
+                continue
+            missed = _check_missed_reminders_for_rows(user_id, rows)
+            for row in missed:
+                targets.append((user_id, row))
+        except UserNotRegisteredError:
+            continue
+        except Exception as e:
+            report_console_error(
+                f"missed reminder check user_id={user_id}: {e}",
+                exc=e,
+            )
+    return targets
+
+
+# Фоновый цикл раз в час: сброс is_triggered_today + «окно пропущено»
+# (учёт разных TZ без привязки к минутам окончания окон).
+# Используется main() рядом с polling.
+async def reminders_maintenance_loop(bot: Bot) -> None:
+    await asyncio.sleep(25)
+    while True:
+        try:
+            targets = await asyncio.to_thread(_collect_missed_reminder_targets)
+            for user_id, row in targets:
+                try:
+                    await bot.send_message(
+                        user_id,
+                        format_missed_reminder_text(row),
+                        parse_mode="HTML",
+                        reply_markup=kb_reminder_missed_ok(int(row["id"])),
+                    )
+                except Exception as e:
+                    report_console_error(
+                        f"missed reminder send failed user_id={user_id} "
+                        f"id={row.get('id')}: {e}",
+                        exc=e,
+                    )
+        except Exception as e:
+            report_console_error(
+                f"reminders_maintenance_loop tick failed: {e}",
+                exc=e,
+            )
+        await asyncio.sleep(REMINDER_MAINTENANCE_INTERVAL_SEC)
+#endregion
+
 #region Запуск
 # Точка входа: проверка ключей и long-polling.
 # Telegram-сессия: при TELEGRAM_PROXY/OUTBOUND_HTTPS_PROXY — через локальный
@@ -3599,14 +3811,19 @@ async def main() -> None:
     usage_task = asyncio.create_task(
         usage_reminder_loop(bot), name="usage-reminder-loop"
     )
+    reminders_task = asyncio.create_task(
+        reminders_maintenance_loop(bot), name="reminders-maintenance-loop"
+    )
     try:
         await dp.start_polling(bot)
     finally:
         usage_task.cancel()
-        try:
-            await usage_task
-        except asyncio.CancelledError:
-            pass
+        reminders_task.cancel()
+        for task in (usage_task, reminders_task):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 # Запуск: python main.py

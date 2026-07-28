@@ -559,6 +559,34 @@ def get_reminders(user_id: int) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda r: r["id"])
 
 
+# Все reminders (пагинация page) — для фонового сброса суток и missed-check.
+# Используется reminders_maintenance_loop в main.py.
+def list_all_reminders(*, page_size: int = 200) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        payload = call_api(
+            "GET",
+            records_url(TABLE_REMINDERS),
+            query={
+                "pageSize": str(page_size),
+                "page": str(page),
+                "sort": _sort_param("id"),
+            },
+        )
+        rows = _list_records(payload)
+        for row in rows:
+            rem = _normalize_reminder(row)
+            if rem.get("user_id"):
+                out.append(rem)
+        if len(rows) < page_size:
+            break
+        page += 1
+        if page > 500:
+            break
+    return out
+
+
 # Одно напоминание по id (только своё).
 # Используется карточкой reminder / toggle / delete / snooze.
 def get_reminder(user_id: int, reminder_id: int) -> dict[str, Any] | None:

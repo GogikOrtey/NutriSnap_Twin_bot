@@ -26,6 +26,7 @@ NutriSnap_Twin_bot/
 ├── .env                   # Секреты (не в git)
 ├── .env.example           # Шаблон переменных окружения
 ├── .gitignore
+├── .reminder_day_keys.json  # Локальный ключ сброса is_triggered_today (не в git)
 ├── backlog.md             # Личный бэклог (не править агентом)
 └── Старое/                # Устаревшие эксперименты (не использовать как основу)
 ```
@@ -65,10 +66,11 @@ main.py
 - После ✅ еды: `_on_food_saved` → `insert_food_log_from_result` (emoji в `details_json`) → `trigger_reminders_for_food`.
 - `_on_survey_complete`: сразу текст про usage-reminder + inline «🟩 Хорошо»; `set_profile` стартует параллельно (`_survey_profile_saves`). По кнопке — await upsert → «всё настроено» + `show_recognize`.
 - Usage-reminder: если `usage_reminder_enabled` и до 13:00 (TZ юзера) нет `food_logs` за логический день — фоновый `usage_reminder_loop` (раз/мин) шлёт сообщение и пишет `usage_reminder_sent_on`. Вкл/выкл: Настройки → Напоминания → «📲 Напоминание использования бота».
-- Сброс `is_triggered_today` при смене логических суток — process-local `_reminder_day_reset` (до полноценного cron).
-- `🎈` незавершённое: edit dish (`on_edit_dish_pick`), missed reminders (`check_missed_reminders`), перезапуск опроса из профиля, пересчёт ккал после смены goal.
+- Reminders maintenance (`reminders_maintenance_loop`, раз в час): сброс `is_triggered_today` при смене логических суток (`day_change_hour` + TZ); ключ даты в `.reminder_day_keys.json` (переживает рестарт). Пропущенные окна (`check_missed_reminders`): `now > time_end`, ещё не triggered, не frozen → «⏰ Напоминание пропущено» + mark triggered. Почасовой шаг из‑за разных TZ пользователей.
+- Профиль: «🔄 Обновить данные пользователя» → `start_initial_survey`. Смена goal → пересчёт ккал через `resolve_recommended_calories` (Mifflin–St Jeor + Gemini fallback).
+- `🎈` незавершённое: edit dish (`on_edit_dish_pick`).
 - ReplyKeyboard / Inline / логическая дата / FAQ / SMTP feedback — без изменений UX.
-- `main()`: `install_error_email_hooks` + `attach_asyncio_error_handler` + `usage_reminder_loop` перед polling.
+- `main()`: `install_error_email_hooks` + `attach_asyncio_error_handler` + `usage_reminder_loop` + `reminders_maintenance_loop` перед polling.
 
 ### `error_notify.py`
 
@@ -84,7 +86,7 @@ main.py
 
 - Транспорт: `urllib` + `xc-token` + UTF-8 JSON; `NocoDBError` при HTTP ≠ 2xx.
 - Table IDs: users=`meooj41uwpyrx9t`, food_logs=`mqhuz4edun8xpdc`, reminders=`m04n35tamrsu1wn`.
-- CRUD: `get_user` / `create_user` / `update_user` / `delete_user` / `upsert_profile`; food_logs list/insert/delete; reminders CRUD + toggle/snooze/mark_triggered; usage-reminder: `set_usage_reminder_enabled` / `mark_usage_reminder_sent` / `list_users_with_usage_reminder`.
+- CRUD: `get_user` / `create_user` / `update_user` / `delete_user` / `upsert_profile`; food_logs list/insert/delete; reminders CRUD + toggle/snooze/mark_triggered + `list_all_reminders`; usage-reminder: `set_usage_reminder_enabled` / `mark_usage_reminder_sent` / `list_users_with_usage_reminder`.
 - Связь владельца: поле Link `users: {id: telegram_id}` (не колонка `user_id`).
 - `sort` v3: JSON `[{"field":"…","direction":"asc"}]`.
 - `emoji` только внутри `details_json`; при чтении поднимается в плоское поле для UI.
@@ -213,10 +215,7 @@ main.py
 
 ## Планируемое развитие
 
-- Подключить «Обновить данные пользователя» к `start_initial_survey` (сейчас `🎈`).
 - Форма редактирования блюда / UPDATE food_logs (`🎈`).
-- Планировщик пропущенных напоминаний + надёжный сброс `is_triggered_today` по `day_change_hour` (сейчас process-local / `🎈`).
-- Пересчёт целевых ккал после смены goal (`🎈`).
 - Дневной лимит распознаваний.
 
 ## Важные договорённости

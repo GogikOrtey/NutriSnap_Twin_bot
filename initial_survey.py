@@ -606,8 +606,8 @@ async def finish_survey(
 
 #region Публичный API
 # Запускает первичный опрос: приветствие + кнопка «Начать короткий опрос».
-# Используется в main.py из /start (при INITIAL_SURVEY_ENABLED) и позже — при
-# «Обновить данные пользователя» / первом запуске по флагу в БД.
+# Используется в main.py из /start (новый пользователь) и из профиля
+# («🔄 Обновить данные пользователя» → подтверждение).
 async def start_initial_survey(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(SurveyFlow.welcome)
