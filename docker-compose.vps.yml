@@ -1,0 +1,6 @@
+# VPS SkyNode override: host network so container sees
+# mihomo on 127.0.0.1:7890 and /etc/hosts (api.telegram.org).
+# Usage: docker compose -f docker-compose.yml -f docker-compose.vps.yml up --build -d
+services:
+  bot:
+    network_mode: host
