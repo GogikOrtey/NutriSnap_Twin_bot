@@ -210,7 +210,9 @@ SURVEY_PIN_COUNTDOWN_SEC = 15
 
 # Напоминание «нет еды до 13:00» (локальное время пользователя).
 USAGE_REMINDER_HOUR = 13
-USAGE_REMINDER_CHECK_INTERVAL_SEC = 60
+# Фоновый тик раз в час (как reminders_maintenance): разные TZ —
+# почасовой шаг проще точечной минуты; старт со sleep-оффсетом от maintenance.
+USAGE_REMINDER_CHECK_INTERVAL_SEC = 3600
 SURVEY_USAGE_REMINDER_TEXT = (
     "Мы добавили напоминание об использовании бота 🙂\n"
     "\n"
@@ -4225,10 +4227,12 @@ def _collect_usage_reminder_targets() -> list[tuple[int, str]]:
     return targets
 
 
-# Фоновый цикл: раз в минуту ищет пользователей без еды после 13:00 и пишет им.
+# Фоновый цикл раз в час: ищет пользователей без еды после 13:00 и пишет им.
+# Старт sleep(40) — оффсет от reminders_maintenance_loop (sleep 25), чтобы
+# два тяжёлых тика NocoDB не бились в одну секунду после рестарта.
 # Используется main() рядом с polling.
 async def usage_reminder_loop(bot: Bot) -> None:
-    await asyncio.sleep(15)
+    await asyncio.sleep(40)
     while True:
         try:
             targets = await asyncio.to_thread(_collect_usage_reminder_targets)
