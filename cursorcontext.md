@@ -42,8 +42,8 @@ main.py
   ├── db_nocodb.py                      # HTTP xc-token → NocoDB (без прокси)
   ├── include_router(menu_router)
   ├── include_router(setup_initial_survey(on_complete=_on_survey_complete))
-  │     └── … → текст usage-reminder + параллельный set_profile → «🟩 Хорошо»
-  │           → show_recognize
+  │     └── … → usage-reminder + «🟩 Хорошо» (+ параллельный set_profile)
+  │           → закрепить бота (таймер 15с → «Готово») → show_recognize
   └── include_router(setup_food_recognition(..., on_food_saved=_on_food_saved))
         └── persist_confirmed_food → INSERT food_logs + trigger_reminders_for_food
 ```
@@ -60,12 +60,13 @@ main.py
 - `/start` и `dispatch_start`: нет профиля → опрос, есть → меню. `get_user` без записи → `UserNotRegisteredError`; `@dp.error` ловит и зовёт `dispatch_start` (как /start).
 - Прочие необработанные update-ошибки → `@dp.error`: внешние (NocoDB/Gemini/сеть) → `TECH_ISSUES_USER_TEXT` + письмо `🟧🍎`; иначе `report_console_error` (`🟨⬛🍎`).
 - `/start` (есть профиль) → «🏠 Главный экран | Сегодня» из реальных `food_logs`.
+- Главный экран idle: `show_main_menu` / `refresh_main_menu_card` ставят таймер `MAIN_IDLE_REFRESH_SEC` (15 мин); если всё ещё `menu_screen=main` и тот же `ui_message_id` — `edit_message_reply_markup` с inline «🔄 Обновить» (`CALLBACK_MAIN_REFRESH`). Клик → пересборка карточки «сегодня» на месте и новый таймер. Задачи в `_main_idle_refresh_tasks`.
 - Дневник / выгрузка / настройки / reminders — через обёртки `get_user` (кэш), `get_food_logs_*`, `set_*` (+ invalidate), `add_reminder`, … → `db_nocodb`.
 - Кэш `users` в `main.py`: `_user_cache` по telegram_id; `set_*` / `set_profile` — optimistic `_patch_user_cache` / `_put_user_cache` (без лишнего GET); `invalidate_user_cache` — fallback если кэша ещё нет. Singleflight + `_user_gen` для гонок.
 - Меньше roundtrip: `trigger_reminders_for_food` — один list + параллельные PATCH; `show_settings` — user∥reminders; toggle/delete reminder и delete food_log из FSM без ownership-GET; списки reminders/food_logs в FSM на пагинации.
 - После ✅ еды: `_on_food_saved` → `insert_food_log_from_result` (emoji в `details_json`) → `trigger_reminders_for_food`.
 - Дневник «✏️ Изменить блюдо»: выбор номера → свободный текст → Gemini (`analyze_food_log_edit`) → `update_food_log` + сообщение об успехе. Удаление — сразу DELETE + «✅ Блюдо удалено».
-- `_on_survey_complete`: сразу текст про usage-reminder + inline «🟩 Хорошо»; `set_profile` стартует параллельно (`_survey_profile_saves`). По кнопке — await upsert → «всё настроено» + `show_recognize`.
+- `_on_survey_complete`: сразу текст про usage-reminder + inline «🟩 Хорошо»; `set_profile` стартует параллельно (`_survey_profile_saves`). По кнопке — await upsert → напоминание закрепить/положить в важную папку (`SURVEY_PIN_REMINDER_TEXT`) с inline «Жду выполнения (15)»…«(1)» → «Готово» (клик во время отсчёта игнорируется) → «всё настроено» + `show_recognize`.
 - Usage-reminder: если `usage_reminder_enabled` и до 13:00 (TZ юзера) нет `food_logs` за логический день — фоновый `usage_reminder_loop` (раз/мин) шлёт сообщение и пишет `usage_reminder_sent_on`. Вкл/выкл: Настройки → Напоминания → «📲 Напоминание использования бота».
 - Reminders maintenance (`reminders_maintenance_loop`, раз в час): сброс `is_triggered_today` при смене логических суток (`day_change_hour` + TZ); ключ даты в `.reminder_day_keys.json` (переживает рестарт). Пропущенные окна (`check_missed_reminders`): `now > time_end`, ещё не triggered, не frozen → «⏰ Напоминание пропущено» + mark triggered. Почасовой шаг из‑за разных TZ пользователей.
 - Профиль: «🔄 Обновить данные пользователя» → `start_initial_survey`. Смена goal → пересчёт ккал через `resolve_recommended_calories` (Mifflin–St Jeor + Gemini fallback).
@@ -106,7 +107,7 @@ main.py
 
 - Router `initial_survey` + FSM `SurveyFlow`: `welcome` → … → `timezone` / `timezone_location_wait` / `timezone_city` → `calories_confirm` / `calories_edit`.
 - Локация двухшагово: «Поделиться локацией» (текст) → `request_location` + таймер 7 с; при тишине (GPS выкл., Telegram не шлёт update) — подсказка включить GPS.
-- `on_complete` в main: текст usage-reminder + параллельный `set_profile` → «🟩 Хорошо» → «всё настроено» + `show_recognize`.
+- `on_complete` в main: текст usage-reminder + параллельный `set_profile` → «🟩 Хорошо» → закрепить бота (таймер кнопки 15с) → «всё настроено» + `show_recognize`.
 
 ### `proxy_config.py`
 

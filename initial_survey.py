@@ -14,8 +14,9 @@ Gemini fallback ккал — через proxy_config.make_gemini_client (про�
 Nominatim / timezonefinder — без прокси.
 Ошибки формулы/Gemini ккал → error_notify.report_console_error (консоль + 🟨⬛🍎).
 Сбой сохранения профиля обрабатывается в main (_on_survey_complete /
-«🟩 Хорошо» → 🟧🍎). После опроса сразу текст про usage-reminder, upsert
-профиля идёт параллельно, пока пользователь читает.
+«🟩 Хорошо» → 🟧🍎). После опроса: текст про usage-reminder (upsert
+параллельно) → «🟩 Хорошо» → напоминание закрепить бота (кнопка
+«Жду выполнения (15)» → «Готово») → «всё настроено» + Распознать.
 """
 
 from __future__ import annotations

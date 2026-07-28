@@ -28,6 +28,8 @@ FAQ в настройках — обзор возможностей и отве�
    (VPS mihomo), иначе напрямую.
 8. DropStaleMessagesMiddleware — сообщения старше 10 мин (очередь после
    даунтайма) не обрабатываются; чату один раз пишется, что бот снова онлайн.
+9. Главный экран: после 15 мин без смены экрана — inline «🔄 Обновить»
+   под карточкой дня (edit reply_markup); клик пересобирает «сегодня».
 """
 
 from __future__ import annotations
@@ -58,6 +60,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import CommandStart, ExceptionTypeFilter, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     BufferedInputFile,
@@ -194,8 +197,16 @@ CALLBACK_DIARY_PREV = "diary:prev"
 CALLBACK_DIARY_NEXT = "diary:next"
 CALLBACK_REM_SNOOZE_PREFIX = "rem:snooze:"
 CALLBACK_REM_OK_PREFIX = "rem:ok:"
+# Inline под главной карточкой после 15 мин бездействия на главном экране.
+CALLBACK_MAIN_REFRESH = "main:refresh"
+# Сколько ждать на главном экране, прежде чем показать «🔄 Обновить».
+MAIN_IDLE_REFRESH_SEC = 15 * 60
 # Inline под финалом опроса: подтвердить текст про usage-reminder.
 CALLBACK_SURVEY_USAGE_OK = "survey:usage_ok"
+# Inline под напоминанием «закрепите бота»: ожидание / «Готово».
+CALLBACK_SURVEY_PIN_WAIT = "survey:pin_wait"
+CALLBACK_SURVEY_PIN_DONE = "survey:pin_done"
+SURVEY_PIN_COUNTDOWN_SEC = 15
 
 # Напоминание «нет еды до 13:00» (локальное время пользователя).
 USAGE_REMINDER_HOUR = 13
@@ -207,6 +218,17 @@ SURVEY_USAGE_REMINDER_TEXT = (
     "не будет ни одной фиксации еды, бот мягко напомнит. "
     "Работает каждый день; отключить можно в "
     "Настройки → Напоминания → «Напоминание использования бота»"
+)
+# После «🟩 Хорошо»: закрепить/положить бота в важную папку (кнопка с таймером).
+SURVEY_PIN_REMINDER_TEXT = (
+    "Добавьте бот в папку с важными чатами, или закрепите его сверху — "
+    "чтобы он не потерялся"
+)
+SURVEY_SETUP_DONE_TEXT = (
+    "Отлично, всё настроено! ✅\n"
+    "\n"
+    "Теперь бот полностью готов к работе. Попробуй отправить фото "
+    "или описание еды в чат прямо сейчас"
 )
 USAGE_REMINDER_EMOJIS = (
     "🍭", "🍬", "🍫", "🥧", "🥘", "🍳", "☕️", "🍖", "🍛", "🍲", "🥪", "🧀", "🍱",
@@ -535,6 +557,10 @@ def _persist_reminder_day_reset() -> None:
         report_console_error(f"persist reminder day keys failed: {e}", exc=e)
 # Фоновый upsert профиля после опроса: user_id → Task (пока читают про reminder).
 _survey_profile_saves: dict[int, asyncio.Task[None]] = {}
+# Таймер кнопки «Жду выполнения (N)» → «Готово» после опроса: user_id → Task.
+_survey_pin_countdown_tasks: dict[int, asyncio.Task[None]] = {}
+# Таймер 15 мин на главном экране → inline «🔄 Обновить»: user_id → Task.
+_main_idle_refresh_tasks: dict[int, asyncio.Task[None]] = {}
 
 # Кэш профиля users по Telegram id (process-local, как MemoryStorage).
 _user_cache: dict[int, dict[str, Any]] = {}
@@ -1611,6 +1637,20 @@ def kb_survey_usage_ok() -> InlineKeyboardMarkup:
     )
 
 
+# Inline под напоминанием закрепить бота: «Жду выполнения (N)» или «Готово».
+# Используется _show_survey_pin_reminder и таймером _run_survey_pin_countdown.
+def kb_survey_pin(*, ready: bool = False, seconds: int = SURVEY_PIN_COUNTDOWN_SEC) -> InlineKeyboardMarkup:
+    if ready:
+        text = "Готово"
+        data = CALLBACK_SURVEY_PIN_DONE
+    else:
+        text = f"Жду выполнения ({seconds})"
+        data = CALLBACK_SURVEY_PIN_WAIT
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=text, callback_data=data)]]
+    )
+
+
 # Reply-клавиатура выбора временного окна напоминания.
 # Используется флоу «➕ Добавить напоминание» (шаг окна).
 def kb_reminder_windows() -> ReplyKeyboardMarkup:
@@ -1764,6 +1804,21 @@ def kb_diary_nav(offset: int = 0) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="▶️ Завтра", callback_data=CALLBACK_DIARY_NEXT)
         )
     return InlineKeyboardMarkup(inline_keyboard=[row])
+
+
+# Inline «🔄 Обновить» под карточкой главного экрана после простоя.
+# Используется _run_main_idle_refresh.
+def kb_main_refresh() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Обновить",
+                    callback_data=CALLBACK_MAIN_REFRESH,
+                )
+            ]
+        ]
+    )
 #endregion
 
 #region UI: экраны меню
@@ -1868,10 +1923,13 @@ async def replace_ui(
 async def show_main_menu(
     message: Message, state: FSMContext, user_id: int | None = None
 ) -> None:
+    uid = user_id if user_id is not None else (message.from_user.id if message.from_user else 0)
+    cancel_main_idle_refresh(uid)
+    prev_data = await state.get_data()
+    prev_mid = int(prev_data.get(UI_MESSAGE_ID_KEY) or 0)
     stale_ids = await pop_action_prompt_ids(state)
     await state.clear()
     await state.update_data(diary_offset=0, export_return="main", menu_screen="main")
-    uid = user_id if user_id is not None else (message.from_user.id if message.from_user else 0)
     user = get_user(uid)
     user_id = uid
     today = logical_today(user)
@@ -1883,6 +1941,16 @@ async def show_main_menu(
         is_today=True,
         title="🏠 <b>Главный экран | Сегодня</b>",
     )
+    # Снять «🔄 Обновить» со старой карточки, если уходим на новое сообщение.
+    if prev_mid and prev_mid not in stale_ids:
+        try:
+            await message.bot.edit_message_reply_markup(
+                chat_id=message.chat.id,
+                message_id=prev_mid,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
+            )
+        except Exception:
+            pass
     if stale_ids:
         try:
             edited = await message.bot.edit_message_text(
@@ -1890,6 +1958,7 @@ async def show_main_menu(
                 chat_id=message.chat.id,
                 message_id=stale_ids[0],
                 parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
             )
             await push_reply_keyboard(message, kb_main_menu())
             mid = (
@@ -1902,6 +1971,12 @@ async def show_main_menu(
                 await dismiss_action_prompts(
                     message.bot, message.chat.id, stale_ids[1:]
                 )
+            schedule_main_idle_refresh(
+                bot=message.bot,
+                chat_id=message.chat.id,
+                user_id=user_id,
+                message_id=mid,
+            )
             return
         except Exception:
             pass
@@ -1912,6 +1987,113 @@ async def show_main_menu(
     await state.update_data(**{UI_MESSAGE_ID_KEY: sent.message_id})
     if stale_ids:
         await dismiss_action_prompts(message.bot, message.chat.id, stale_ids)
+    schedule_main_idle_refresh(
+        bot=message.bot,
+        chat_id=message.chat.id,
+        user_id=user_id,
+        message_id=sent.message_id,
+    )
+
+
+# Пересобирает карточку главного экрана на месте (без новой «пыли»).
+# Используется inline «🔄 Обновить» после простоя на главном.
+async def refresh_main_menu_card(
+    message: Message, state: FSMContext, *, user_id: int
+) -> None:
+    await state.clear()
+    await state.update_data(diary_offset=0, export_return="main", menu_screen="main")
+    user = get_user(user_id)
+    today = logical_today(user)
+    logs = get_food_logs_for_date(user_id, today)
+    text = format_day_card(
+        user,
+        today,
+        logs,
+        is_today=True,
+        title="🏠 <b>Главный экран | Сегодня</b>",
+    )
+    try:
+        await message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
+        )
+        await state.update_data(**{UI_MESSAGE_ID_KEY: message.message_id})
+    except Exception:
+        await show_main_menu(message, state, user_id=user_id)
+        return
+    schedule_main_idle_refresh(
+        bot=message.bot,
+        chat_id=message.chat.id,
+        user_id=user_id,
+        message_id=message.message_id,
+    )
+
+
+# Снимает таймер «🔄 Обновить» на главном (повторный показ / уход с экрана).
+# Используется schedule_main_idle_refresh и on_main_refresh.
+def cancel_main_idle_refresh(user_id: int) -> None:
+    task = _main_idle_refresh_tasks.pop(user_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+# Через MAIN_IDLE_REFRESH_SEC добавляет inline «🔄 Обновить», если всё ещё главный экран.
+# Используется schedule_main_idle_refresh (create_task).
+async def _run_main_idle_refresh(
+    *,
+    bot: Bot,
+    chat_id: int,
+    user_id: int,
+    message_id: int,
+) -> None:
+    try:
+        await asyncio.sleep(MAIN_IDLE_REFRESH_SEC)
+        state = FSMContext(
+            storage=storage,
+            key=StorageKey(bot_id=bot.id, chat_id=chat_id, user_id=user_id),
+        )
+        data = await state.get_data()
+        if data.get("menu_screen") != "main":
+            return
+        if int(data.get(UI_MESSAGE_ID_KEY) or 0) != message_id:
+            return
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=kb_main_refresh(),
+            )
+        except Exception:
+            return
+    except asyncio.CancelledError:
+        return
+    finally:
+        current = _main_idle_refresh_tasks.get(user_id)
+        if current is not None and current is asyncio.current_task():
+            _main_idle_refresh_tasks.pop(user_id, None)
+
+
+# Планирует появление «🔄 Обновить» через 15 мин простоя на главном экране.
+# Используется show_main_menu и refresh_main_menu_card.
+def schedule_main_idle_refresh(
+    *,
+    bot: Bot,
+    chat_id: int,
+    user_id: int,
+    message_id: int,
+) -> None:
+    cancel_main_idle_refresh(user_id)
+    task = asyncio.create_task(
+        _run_main_idle_refresh(
+            bot=bot,
+            chat_id=chat_id,
+            user_id=user_id,
+            message_id=message_id,
+        ),
+        name=f"main-idle-refresh-{user_id}",
+    )
+    _main_idle_refresh_tasks[user_id] = task
 
 
 # Показывает дневник за дату с diary_offset + inline-навигацию.
@@ -2364,7 +2546,7 @@ async def _on_survey_complete(
     )
 
 
-# После «🟩 Хорошо»: дождаться upsert профиля → «всё настроено» + Распознать.
+# После «🟩 Хорошо»: дождаться upsert профиля → напоминание закрепить бота.
 # Используется inline-кнопкой под SURVEY_USAGE_REMINDER_TEXT.
 async def _finish_survey_after_usage_ok(
     message: Message,
@@ -2385,13 +2567,7 @@ async def _finish_survey_after_usage_ok(
             )
             return
         await state.clear()
-        await message.answer(
-            "Отлично, всё настроено! ✅\n"
-            "\n"
-            "Теперь бот полностью готов к работе. Попробуй отправить фото "
-            "или описание еды в чат прямо сейчас"
-        )
-        await show_recognize(message, state)
+        await _show_survey_pin_reminder(message, user_id=user_id)
         return
 
     if not task.done():
@@ -2421,19 +2597,87 @@ async def _finish_survey_after_usage_ok(
         _survey_profile_saves.pop(user_id, None)
 
     await state.clear()
-    done_text = (
-        "Отлично, всё настроено! ✅\n"
-        "\n"
-        "Теперь бот полностью готов к работе. Попробуй отправить фото "
-        "или описание еды в чат прямо сейчас"
-    )
     if wait_msg is not None:
         try:
-            await wait_msg.edit_text(done_text)
+            await wait_msg.delete()
         except Exception:
-            await message.answer(done_text)
-    else:
-        await message.answer(done_text)
+            pass
+    await _show_survey_pin_reminder(message, user_id=user_id)
+
+
+# Снимает таймер кнопки «Жду выполнения» (клик «Готово» / повторный показ).
+# Используется _show_survey_pin_reminder и on_survey_pin_done.
+def cancel_survey_pin_countdown(user_id: int) -> None:
+    task = _survey_pin_countdown_tasks.pop(user_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+# Раз в секунду меняет текст кнопки 15→1, затем «Готово».
+# Используется _show_survey_pin_reminder (create_task).
+async def _run_survey_pin_countdown(
+    *,
+    bot: Bot,
+    chat_id: int,
+    message_id: int,
+    user_id: int,
+) -> None:
+    try:
+        for sec in range(SURVEY_PIN_COUNTDOWN_SEC, 0, -1):
+            await asyncio.sleep(1)
+            next_sec = sec - 1
+            try:
+                if next_sec > 0:
+                    await bot.edit_message_reply_markup(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        reply_markup=kb_survey_pin(seconds=next_sec),
+                    )
+                else:
+                    await bot.edit_message_reply_markup(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        reply_markup=kb_survey_pin(ready=True),
+                    )
+            except Exception:
+                # Сообщение удалено / устарело — дальше крутить смысла нет.
+                return
+    except asyncio.CancelledError:
+        return
+    finally:
+        current = _survey_pin_countdown_tasks.get(user_id)
+        if current is not None and current is asyncio.current_task():
+            _survey_pin_countdown_tasks.pop(user_id, None)
+
+
+# Показывает напоминание закрепить бота и запускает таймер кнопки.
+# Используется _finish_survey_after_usage_ok после успешного upsert.
+async def _show_survey_pin_reminder(message: Message, *, user_id: int) -> None:
+    cancel_survey_pin_countdown(user_id)
+    pin_msg = await message.answer(
+        SURVEY_PIN_REMINDER_TEXT,
+        reply_markup=kb_survey_pin(seconds=SURVEY_PIN_COUNTDOWN_SEC),
+    )
+    task = asyncio.create_task(
+        _run_survey_pin_countdown(
+            bot=message.bot,
+            chat_id=pin_msg.chat.id,
+            message_id=pin_msg.message_id,
+            user_id=user_id,
+        ),
+        name=f"survey-pin-{user_id}",
+    )
+    _survey_pin_countdown_tasks[user_id] = task
+
+
+# После «Готово» на шаге закрепить бота → «всё настроено» + Распознать.
+# Используется on_survey_pin_done.
+async def _finish_survey_after_pin_done(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    await state.clear()
+    await message.answer(SURVEY_SETUP_DONE_TEXT)
     await show_recognize(message, state)
 
 
@@ -2727,6 +2971,30 @@ async def on_diary_next(callback: CallbackQuery, state: FSMContext) -> None:
             user_id=callback.from_user.id,
             edit_message=callback.message,
         )
+
+
+# Inline «🔄 Обновить» на главном после простоя → пересборка карточки «сегодня».
+@menu_router.callback_query(F.data == CALLBACK_MAIN_REFRESH)
+async def on_main_refresh(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    if callback.message is None:
+        return
+    uid = callback.from_user.id if callback.from_user else 0
+    cancel_main_idle_refresh(uid)
+    data = await state.get_data()
+    current_mid = int(data.get(UI_MESSAGE_ID_KEY) or 0)
+    if (
+        data.get("menu_screen") != "main"
+        or current_mid != callback.message.message_id
+    ):
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[])
+            )
+        except Exception:
+            pass
+        return
+    await refresh_main_menu_card(callback.message, state, user_id=uid)
 
 
 # Памятка «Добавить блюдо» — анализ без кнопки.
@@ -3889,7 +4157,7 @@ async def on_rem_ok(callback: CallbackQuery, state: FSMContext) -> None:
             pass
 
 
-# Inline после опроса: «🟩 Хорошо» → дождаться create/upsert → Распознать.
+# Inline после опроса: «🟩 Хорошо» → дождаться create/upsert → закрепить бота.
 @menu_router.callback_query(F.data == CALLBACK_SURVEY_USAGE_OK)
 async def on_survey_usage_ok(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
@@ -3902,6 +4170,26 @@ async def on_survey_usage_ok(callback: CallbackQuery, state: FSMContext) -> None
         await _finish_survey_after_usage_ok(
             callback.message, state, user_id=user_id
         )
+
+
+# Нажатие во время обратного отсчёта «Жду выполнения» — без реакции (только снять спиннер).
+@menu_router.callback_query(F.data == CALLBACK_SURVEY_PIN_WAIT)
+async def on_survey_pin_wait(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
+# Inline «Готово» после таймера → «всё настроено» + Распознать.
+@menu_router.callback_query(F.data == CALLBACK_SURVEY_PIN_DONE)
+async def on_survey_pin_done(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    user_id = callback.from_user.id if callback.from_user else 0
+    cancel_survey_pin_countdown(user_id)
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await _finish_survey_after_pin_done(callback.message, state)
 #endregion
 
 #region Usage-reminder (фон: нет еды до 13:00)
