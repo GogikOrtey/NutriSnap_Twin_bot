@@ -142,7 +142,7 @@ def test_users_crud() -> None:
 
 
 def test_food_logs_crud() -> None:
-    """Создать user → INSERT food_log → list → DELETE → list."""
+    """Создать user → INSERT food_log → list → PATCH → DELETE → list."""
     print("\n=== test_food_logs_crud ===\n")
 
     try:
@@ -202,6 +202,31 @@ def test_food_logs_crud() -> None:
         "GET food_logs range",
         any(r["id"] == log_id for r in range_rows),
         f"count={len(range_rows)}",
+    )
+
+    patched = db.update_food_log(
+        TEST_USER_ID,
+        log_id,
+        title="Овсянка с бананом",
+        calories=480,
+        proteins=15.0,
+        fats=10.0,
+        carbs=78.0,
+        portion_g=350.0,
+        details_json={
+            "emoji": "🍌",
+            "dish": "Овсянка с бананом",
+            "status": "recognized",
+        },
+        check_owner=False,
+    )
+    _ok(
+        "PATCH food_log",
+        patched is not None
+        and patched.get("title") == "Овсянка с бананом"
+        and int(patched.get("calories") or 0) == 480
+        and patched.get("emoji") == "🍌",
+        json.dumps(patched, ensure_ascii=False) if patched else "None",
     )
 
     deleted = db.delete_food_log(TEST_USER_ID, log_id)

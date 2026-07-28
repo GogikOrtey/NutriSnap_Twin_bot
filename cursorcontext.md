@@ -64,11 +64,11 @@ main.py
 - Кэш `users` в `main.py`: `_user_cache` по telegram_id; `set_*` / `set_profile` — optimistic `_patch_user_cache` / `_put_user_cache` (без лишнего GET); `invalidate_user_cache` — fallback если кэша ещё нет. Singleflight + `_user_gen` для гонок.
 - Меньше roundtrip: `trigger_reminders_for_food` — один list + параллельные PATCH; `show_settings` — user∥reminders; toggle/delete reminder и delete food_log из FSM без ownership-GET; списки reminders/food_logs в FSM на пагинации.
 - После ✅ еды: `_on_food_saved` → `insert_food_log_from_result` (emoji в `details_json`) → `trigger_reminders_for_food`.
+- Дневник «✏️ Изменить блюдо»: выбор номера → свободный текст → Gemini (`analyze_food_log_edit`) → `update_food_log` + сообщение об успехе. Удаление — сразу DELETE + «✅ Блюдо удалено».
 - `_on_survey_complete`: сразу текст про usage-reminder + inline «🟩 Хорошо»; `set_profile` стартует параллельно (`_survey_profile_saves`). По кнопке — await upsert → «всё настроено» + `show_recognize`.
 - Usage-reminder: если `usage_reminder_enabled` и до 13:00 (TZ юзера) нет `food_logs` за логический день — фоновый `usage_reminder_loop` (раз/мин) шлёт сообщение и пишет `usage_reminder_sent_on`. Вкл/выкл: Настройки → Напоминания → «📲 Напоминание использования бота».
 - Reminders maintenance (`reminders_maintenance_loop`, раз в час): сброс `is_triggered_today` при смене логических суток (`day_change_hour` + TZ); ключ даты в `.reminder_day_keys.json` (переживает рестарт). Пропущенные окна (`check_missed_reminders`): `now > time_end`, ещё не triggered, не frozen → «⏰ Напоминание пропущено» + mark triggered. Почасовой шаг из‑за разных TZ пользователей.
 - Профиль: «🔄 Обновить данные пользователя» → `start_initial_survey`. Смена goal → пересчёт ккал через `resolve_recommended_calories` (Mifflin–St Jeor + Gemini fallback).
-- `🎈` незавершённое: edit dish (`on_edit_dish_pick`).
 - ReplyKeyboard / Inline / логическая дата / FAQ / SMTP feedback — без изменений UX.
 - `main()`: `install_error_email_hooks` + `attach_asyncio_error_handler` + `usage_reminder_loop` + `reminders_maintenance_loop` перед polling.
 
@@ -86,7 +86,7 @@ main.py
 
 - Транспорт: `urllib` + `xc-token` + UTF-8 JSON; `NocoDBError` при HTTP ≠ 2xx.
 - Table IDs: users=`meooj41uwpyrx9t`, food_logs=`mqhuz4edun8xpdc`, reminders=`m04n35tamrsu1wn`.
-- CRUD: `get_user` / `create_user` / `update_user` / `delete_user` / `upsert_profile`; food_logs list/insert/delete; reminders CRUD + toggle/snooze/mark_triggered + `list_all_reminders`; usage-reminder: `set_usage_reminder_enabled` / `mark_usage_reminder_sent` / `list_users_with_usage_reminder`.
+- CRUD: `get_user` / `create_user` / `update_user` / `delete_user` / `upsert_profile`; food_logs list/insert/`update_food_log`/delete; reminders CRUD + toggle/snooze/mark_triggered + `list_all_reminders`; usage-reminder: `set_usage_reminder_enabled` / `mark_usage_reminder_sent` / `list_users_with_usage_reminder`.
 - Связь владельца: поле Link `users: {id: telegram_id}` (не колонка `user_id`).
 - `sort` v3: JSON `[{"field":"…","direction":"asc"}]`.
 - `emoji` только внутри `details_json`; при чтении поднимается в плоское поле для UI.
@@ -118,8 +118,9 @@ main.py
 ### `food_recognition.py`
 
 - Клиент Gemini через `make_gemini_client` (прокси на VPS).
-- `_generate_with_fallback`: промежуточные сбои моделей (503/504 и т.п.) — только `print` в консоль, без письма; на почту уходит, когда все попытки исчерпаны и хендлер зовёт `report_service_problem` (пустой/неразобранный ответ).
-- Без изменений флоу Gemini/FSM; `persist_confirmed_food` → консоль + `on_food_saved` (запись в БД в main).
+- `_generate_with_fallback`: промежуточные сбои моделей (503/504 и т.п.) — только `print` в консоль, без письма; на почту уходит, когда все попытки исчерпаны и хендлер зовёт `report_service_problem` (пустой/неразобранный ответ). Принимает `response_schema` (FoodResult / FoodLogEditResult).
+- `analyze_food_log_edit` + `parse_food_log_edit`: свободная текстовая правка записи дневника (status applied/unclear/irrelevant) → UPDATE в main.
+- Без изменений флоу Gemini/FSM распознавания; `persist_confirmed_food` → консоль + `on_food_saved` (запись в БД в main).
 - Статус анализа (`send_analysis_status`): «✨ Анализирую…» сразу с `ReplyKeyboardRemove` (без пустого stub+delete). Edit в превью обычно ок; fallback — новое сообщение.
 
 ## Переменные окружения
@@ -215,7 +216,6 @@ main.py
 
 ## Планируемое развитие
 
-- Форма редактирования блюда / UPDATE food_logs (`🎈`).
 - Дневной лимит распознаваний.
 
 ## Важные договорённости

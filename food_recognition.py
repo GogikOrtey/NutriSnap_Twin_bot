@@ -16,10 +16,12 @@ food_recognition.py — FSM-флоу распознавания еды для Nu
 2. Промпты PHOTO_PROMPT / TEXT_PROMPT.
 3. FoodFlow (FSM), FoodResult (Pydantic-схема), клиент Gemini
    (через proxy_config.make_gemini_client — точечный прокси на VPS), Router.
-4. Анализ через Gemini (_generate_with_fallback, analyze_food_photo/text).
+4. Анализ через Gemini (_generate_with_fallback, analyze_food_photo/text,
+   analyze_food_log_edit — свободная правка записи дневника).
 5. Нормализация и форматирование результата.
 6. Клавиатуры confirm / label / cancel / edit-menu (+ «🏠 Главное меню»).
-7. Утилиты (save_to_console, persist_confirmed_food, download_photo_temp, parse_food_result).
+7. Утилиты (save_to_console, persist_confirmed_food, download_photo_temp, parse_food_result,
+   parse_food_log_edit).
 8. Confirm UI (show/finalize/schedule/handle_ai_result).
 9. Хендлеры: фото, подсказка, вес, текст, callbacks, меню правок.
 10. setup_food_recognition — MemoryStorage + тексты меню / «🏠» + on_food_saved; возвращает router.
@@ -142,6 +144,31 @@ emoji — один наиболее подходящий эмодзи для б�
 portion_g — ВСЕГДА: если пользователь указал вес — используй его; иначе оцени
 типичную/среднюю порцию такого блюда в граммах.
 is_label=false, portion_known=false."""
+
+EDIT_FOOD_LOG_PROMPT = """Пользователь хочет изменить уже сохранённую запись о еде в дневнике.
+
+Текущая запись (JSON):
+{current_json}
+
+Инструкция пользователя:
+{user_text}
+
+Верни JSON строго по схеме:
+- status=applied — понял, что менять; заполни ВСЕ поля итоговой записи ПОСЛЕ правки.
+  Неизменённые поля скопируй из текущей записи как есть.
+- status=unclear — не понял инструкцию; поля всё равно заполни копией текущей записи.
+- status=irrelevant — текст не про правку этой записи (болтовня / новый приём пищи);
+  поля — копия текущей.
+
+Правила применения:
+- Если меняют только порцию/вес — пропорционально пересчитай calories и БЖУ.
+- Если явно указали ккал и/или белки/жиры/углеводы — поставь эти числа
+  (не пересчитывай от порции, если об этом не просили).
+- Если меняют название — обнови title; emoji обнови только если логично
+  (иначе оставь прежний).
+- emoji — ровно один символ-эмодзи (или как в текущей записи).
+- calories — целое ≥ 0; proteins/fats/carbs/portion_g — числа ≥ 0.
+- Не выдумывай правки, которых пользователь не просил."""
 #endregion
 
 #region Схема ответа и роутер
@@ -209,12 +236,34 @@ class FoodResult(BaseModel):
         default=False, description="True, если объём явно указан на этикетке"
     )
     is_label: bool = Field(default=False, description="True, если это этикетка/состав")
+
+
+# Итоговая запись дневника после свободной текстовой правки через Gemini.
+# Используется analyze_food_log_edit / parse_food_log_edit (флоу «Изменить блюдо»).
+class FoodLogEditResult(BaseModel):
+    status: Literal["applied", "unclear", "irrelevant"] = Field(
+        description="Понял ли правку / неясность / не про эту запись"
+    )
+    title: str = Field(description="Название блюда после правки")
+    emoji: str | None = Field(
+        default=None,
+        description="Один эмодзи блюда (слева от названия)",
+    )
+    calories: int = Field(description="Калорийность в ккал после правки")
+    proteins: float = Field(description="Белки в граммах после правки")
+    fats: float = Field(description="Жиры в граммах после правки")
+    carbs: float = Field(description="Углеводы в граммах после правки")
+    portion_g: float = Field(description="Вес порции в граммах после правки")
 #endregion
 
 #region Анализ ч/з Gemini
 # Общий вызов Gemini с JSON-схемой и fallback по MODELS_QUEUE.
-# Используется в analyze_food_photo и analyze_food_text.
-def _generate_with_fallback(contents: list[Any]) -> str | None:
+# Используется в analyze_food_photo / analyze_food_text / analyze_food_log_edit.
+def _generate_with_fallback(
+    contents: list[Any],
+    *,
+    response_schema: type[BaseModel] = FoodResult,
+) -> str | None:
     response_text = None
     skipped_models: set[str] = set()
     total_attempts = len(MODELS_QUEUE)
@@ -237,7 +286,7 @@ def _generate_with_fallback(contents: list[Any]) -> str | None:
                 contents=contents,
                 config={
                     "response_mime_type": "application/json",
-                    "response_schema": FoodResult,
+                    "response_schema": response_schema,
                     "http_options": {
                         "timeout": REQUEST_TIMEOUT_MS,
                         "retry_options": {"attempts": 1},
@@ -289,6 +338,43 @@ def analyze_food_text(text: str) -> str | None:
         TEXT_PROMPT,
     ]
     return _generate_with_fallback(contents)
+
+
+# Применяет свободную текстовую правку к записи дневника через Gemini.
+# current — dict с title/emoji/calories/proteins/fats/carbs/portion_g.
+# Используется флоу «Изменить блюдо» в main.py.
+def analyze_food_log_edit(current: dict[str, Any], user_text: str) -> str | None:
+    current_payload = {
+        "title": str(current.get("title") or "Блюдо"),
+        "emoji": str(current.get("emoji") or "").strip() or None,
+        "calories": int(current.get("calories") or 0),
+        "proteins": float(current.get("proteins") or 0),
+        "fats": float(current.get("fats") or 0),
+        "carbs": float(current.get("carbs") or 0),
+        "portion_g": float(current.get("portion_g") or 0),
+    }
+    prompt = EDIT_FOOD_LOG_PROMPT.format(
+        current_json=json.dumps(current_payload, ensure_ascii=False, indent=2),
+        user_text=user_text.strip(),
+    )
+    return _generate_with_fallback(
+        [prompt],
+        response_schema=FoodLogEditResult,
+    )
+
+
+# Парсит JSON-ответ Gemini в FoodLogEditResult (или None).
+# Используется хендлером правки блюда в main.py.
+def parse_food_log_edit(raw: str | None) -> FoodLogEditResult | None:
+    if not raw or not str(raw).strip():
+        return None
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        return FoodLogEditResult.model_validate(data)
+    except Exception:
+        return None
 #endregion
 
 #region Результат

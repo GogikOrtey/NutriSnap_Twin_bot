@@ -84,7 +84,11 @@ from error_notify import (
     report_error_auto,
     report_service_problem,
 )
-from food_recognition import setup_food_recognition
+from food_recognition import (
+    analyze_food_log_edit,
+    parse_food_log_edit,
+    setup_food_recognition,
+)
 from initial_survey import (
     resolve_recommended_calories,
     setup_initial_survey,
@@ -474,6 +478,7 @@ MENU_BUTTON_TEXTS: frozenset[str] = frozenset(
 # Используется хендлерами menu_router; не пересекается с FoodFlow.
 class MenuFlow(StatesGroup):
     diary_pick_edit = State()
+    diary_edit_wait = State()
     diary_pick_delete = State()
     settings_day_hour = State()
     settings_calories = State()
@@ -686,6 +691,35 @@ def delete_food_log(
     user_id: int, log_id: int, *, check_owner: bool = True
 ) -> bool:
     return db.delete_food_log(user_id, log_id, check_owner=check_owner)
+
+
+# PATCH полей food_logs после текстовой правки через Gemini.
+# Используется флоу «Изменить блюдо» (из FSM — check_owner=False).
+def update_food_log(
+    user_id: int,
+    log_id: int,
+    *,
+    title: str,
+    calories: int,
+    proteins: float,
+    fats: float,
+    carbs: float,
+    portion_g: float,
+    details_json: dict[str, Any] | None = None,
+    check_owner: bool = True,
+) -> dict[str, Any] | None:
+    return db.update_food_log(
+        user_id,
+        log_id,
+        title=title,
+        calories=calories,
+        proteins=proteins,
+        fats=fats,
+        carbs=carbs,
+        portion_g=portion_g,
+        details_json=details_json,
+        check_owner=check_owner,
+    )
 
 
 # INSERT food_logs после ✅ распознавания (emoji → details_json).
@@ -1338,6 +1372,76 @@ def kb_pick_dish(total: int, page: int = 0) -> ReplyKeyboardMarkup:
 
     rows.append([KeyboardButton(text=BTN_BACK)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+# Краткая карточка записи для экрана правки (без HTML — обычный текст).
+# Используется промптом «что изменить» и сообщением об успехе.
+def format_log_edit_card(row: dict[str, Any]) -> str:
+    emoji = format_log_emoji(row)
+    title = str(row.get("title") or "Блюдо")
+    cal = int(row.get("calories") or 0)
+    p = format_macro_gr(row.get("proteins") or 0)
+    f = format_macro_gr(row.get("fats") or 0)
+    c = format_macro_gr(row.get("carbs") or 0)
+    portion = float(row.get("portion_g") or 0)
+    portion_s = f"{portion:g}" if portion else "—"
+    return (
+        f"{emoji} {title} — {cal} ккал\n"
+        f"Б {p} • Ж {f} • У {c}\n"
+        f"Порция: ~{portion_s} г"
+    )
+
+
+# Текст после выбора блюда: текущие значения + просьба написать правку.
+# Используется on_edit_dish_pick.
+def format_dish_edit_prompt(row: dict[str, Any]) -> str:
+    return (
+        "✏️ Изменить блюдо\n"
+        "\n"
+        f"{format_log_edit_card(row)}\n"
+        "\n"
+        "Напишите текстом, что изменить — например:\n"
+        "«ккал 400», «порция 250 г», «это был омлет с сыром»\n"
+        "\n"
+        "Или нажмите «⬅️ Назад»"
+    )
+
+
+# Сливает правки Gemini в details_json записи (emoji/dish/КБЖУ).
+# Используется on_edit_dish_text перед update_food_log.
+def merge_food_log_details(
+    old_row: dict[str, Any],
+    *,
+    title: str,
+    emoji: str | None,
+    calories: int,
+    proteins: float,
+    fats: float,
+    carbs: float,
+    portion_g: float,
+) -> dict[str, Any]:
+    details = old_row.get("details_json")
+    if isinstance(details, str) and details.strip():
+        try:
+            parsed = json.loads(details)
+            details = parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            details = {}
+    if not isinstance(details, dict):
+        details = {}
+    else:
+        details = dict(details)
+    emoji_s = (emoji or "").strip() or str(details.get("emoji") or "").strip()
+    details["dish"] = title
+    details["title"] = title
+    if emoji_s:
+        details["emoji"] = emoji_s
+    details["calories"] = calories
+    details["proteins"] = proteins
+    details["fats"] = fats
+    details["carbs"] = carbs
+    details["portion_g"] = portion_g
+    return details
 
 
 # Текст экрана выбора блюда (edit/delete) с учётом текущей страницы номеров.
@@ -2458,6 +2562,39 @@ async def on_back(message: Message, state: FSMContext) -> None:
     ):
         await show_diary(message, state)
         return
+    if current == MenuFlow.diary_edit_wait.state:
+        # Назад с ввода правки → снова выбор номера блюда.
+        user_id = message.from_user.id if message.from_user else 0
+        user = get_user(user_id)
+        pick_ids: list[int] = list(data.get("pick_logs") or [])
+        cached_rows: list[dict[str, Any]] = list(data.get("pick_log_rows") or [])
+        if not pick_ids:
+            await show_diary(message, state)
+            return
+        if cached_rows:
+            id_to_log = {r["id"]: r for r in cached_rows}
+            ordered = [id_to_log[i] for i in pick_ids if i in id_to_log]
+        else:
+            offset = int(data.get("diary_offset", 0))
+            logged_date = logical_date_with_offset(user, offset)
+            logs = get_food_logs_for_date(user_id, logged_date)
+            id_to_log = {r["id"]: r for r in logs}
+            ordered = [id_to_log[i] for i in pick_ids if i in id_to_log]
+            await state.update_data(pick_log_rows=logs)
+        if not ordered:
+            await show_diary(message, state)
+            return
+        page = int(data.get("pick_page", 0))
+        await state.set_state(MenuFlow.diary_pick_edit)
+        await replace_ui(
+            message,
+            state,
+            format_dish_pick_prompt(
+                mode="edit", user=user, logs=ordered, page=page
+            ),
+            reply_markup=kb_pick_dish(len(ordered), page=page),
+        )
+        return
     if current in (
         MenuFlow.settings_calories.state,
         MenuFlow.settings_goal.state,
@@ -2640,7 +2777,7 @@ async def on_edit_dish(message: Message, state: FSMContext) -> None:
     )
 
 
-# 🎈 Выбор номера для изменения → заглушка (без формы полей / UPDATE).
+# Выбор номера → карточка блюда + ожидание свободного текста правки (Gemini).
 @menu_router.message(MenuFlow.diary_pick_edit, F.text, ~F.text.in_(MENU_BUTTON_TEXTS))
 async def on_edit_dish_pick(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
@@ -2654,15 +2791,144 @@ async def on_edit_dish_pick(message: Message, state: FSMContext) -> None:
         await message.answer(f"Нужен номер от 1 до {len(pick_ids)}")
         return
     log_id = pick_ids[idx - 1]
-    await state.set_state(None)
-    # 🎈 UPDATE food_logs ... — форма редактирования появится позже
+    cached_rows: list[dict[str, Any]] = list(data.get("pick_log_rows") or [])
+    row = next((r for r in cached_rows if int(r.get("id") or 0) == log_id), None)
+    if row is None:
+        await message.answer("Не нашёл это блюдо — откройте дневник ещё раз")
+        await show_diary(message, state)
+        return
+    await state.update_data(edit_log_id=log_id, edit_log_row=row)
+    await state.set_state(MenuFlow.diary_edit_wait)
     await replace_ui(
         message,
         state,
-        f"Выбрано блюдо #{idx} (id={log_id}).\n"
-        "✏️ Сохранение изменений в БД скоро — форма редактирования появится позже",
-        reply_markup=kb_diary(),
+        format_dish_edit_prompt(row),
+        reply_markup=kb_nav_only(),
     )
+
+
+# Свободный текст правки → Gemini → UPDATE food_logs → дневник.
+@menu_router.message(MenuFlow.diary_edit_wait, F.text, ~F.text.in_(MENU_BUTTON_TEXTS))
+async def on_edit_dish_text(message: Message, state: FSMContext) -> None:
+    user_text = (message.text or "").strip()
+    if not user_text:
+        await message.answer(
+            "Напишите, что изменить — например «ккал 400» или «порция 250 г»"
+        )
+        return
+
+    data = await state.get_data()
+    log_id = int(data.get("edit_log_id") or 0)
+    row: dict[str, Any] = dict(data.get("edit_log_row") or {})
+    if log_id <= 0 or not row:
+        await message.answer("Данные блюда потеряны — откройте дневник ещё раз")
+        await show_diary(message, state)
+        return
+
+    status_msg = await message.answer("✨ Применяю правку…")
+    try:
+        raw = await asyncio.to_thread(analyze_food_log_edit, row, user_text)
+        edited = parse_food_log_edit(raw)
+        if edited is None:
+            report_service_problem(
+                "Gemini: пустой/неразобранный ответ при правке food_log"
+            )
+            try:
+                await status_msg.edit_text(TECH_ISSUES_USER_TEXT)
+            except Exception:
+                await message.answer(TECH_ISSUES_USER_TEXT)
+            return
+
+        if edited.status == "unclear":
+            try:
+                await status_msg.edit_text(
+                    "Не совсем понял правку 🤔\n"
+                    "Напишите ещё раз — например «ккал 400» или «порция 250 г»"
+                )
+            except Exception:
+                await message.answer(
+                    "Не совсем понял правку 🤔\n"
+                    "Напишите ещё раз — например «ккал 400» или «порция 250 г»"
+                )
+            return
+
+        if edited.status == "irrelevant":
+            try:
+                await status_msg.edit_text(
+                    "Похоже, это не правка этой записи\n"
+                    "Напишите, что изменить в блюде выше — или «⬅️ Назад»"
+                )
+            except Exception:
+                await message.answer(
+                    "Похоже, это не правка этой записи\n"
+                    "Напишите, что изменить в блюде выше — или «⬅️ Назад»"
+                )
+            return
+
+        title = (edited.title or "").strip() or str(row.get("title") or "Блюдо")
+        calories = max(0, int(edited.calories))
+        proteins = max(0.0, float(edited.proteins))
+        fats = max(0.0, float(edited.fats))
+        carbs = max(0.0, float(edited.carbs))
+        portion_g = max(0.0, float(edited.portion_g))
+        emoji = (edited.emoji or "").strip() or str(row.get("emoji") or "").strip()
+        details = merge_food_log_details(
+            row,
+            title=title,
+            emoji=emoji or None,
+            calories=calories,
+            proteins=proteins,
+            fats=fats,
+            carbs=carbs,
+            portion_g=portion_g,
+        )
+
+        user_id = message.from_user.id if message.from_user else 0
+        updated = update_food_log(
+            user_id,
+            log_id,
+            title=title,
+            calories=calories,
+            proteins=proteins,
+            fats=fats,
+            carbs=carbs,
+            portion_g=portion_g,
+            details_json=details,
+            check_owner=False,
+        )
+        if updated is None:
+            try:
+                await status_msg.edit_text(
+                    "Не удалось сохранить изменения — попробуйте ещё раз"
+                )
+            except Exception:
+                await message.answer(
+                    "Не удалось сохранить изменения — попробуйте ещё раз"
+                )
+            return
+
+        await state.set_state(None)
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+        await message.answer(
+            "✅ Блюдо обновлено\n"
+            "\n"
+            f"{format_log_edit_card(updated)}"
+        )
+        await show_diary(message, state)
+    except Exception as e:
+        is_ext = report_error_auto(f"Ошибка при правке food_log: {e}", exc=e)
+        err_text = (
+            TECH_ISSUES_USER_TEXT
+            if is_ext
+            else "Ошибка при сохранении правки. Попробуйте ещё раз"
+        )
+        try:
+            await status_msg.edit_text(err_text)
+        except Exception:
+            await message.answer(err_text)
 
 
 # Старт «Удалить блюдо»: reply-кнопки с номерами → ожидание выбора.
@@ -2715,6 +2981,7 @@ async def on_delete_dish_pick(message: Message, state: FSMContext) -> None:
     # id из своего FSM pick_logs — без лишнего GET владельца.
     delete_food_log(user_id, log_id, check_owner=False)
     await state.set_state(None)
+    await message.answer("✅ Блюдо удалено из дневника")
     await show_diary(message, state)
 
 

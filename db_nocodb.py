@@ -5,8 +5,9 @@
 вместо in-memory stub в main.py.
 Используется: main.py (профиль, дневник, напоминания, usage-reminder),
 проверка запросов — через requests_DB_test.py до встраивания.
-Опционально check_owner=False у delete_food_log / set_reminder_active /
-delete_reminder / snooze_reminder — без ownership-GET, когда id уже из FSM.
+Опционально check_owner=False у update_food_log / delete_food_log /
+set_reminder_active / delete_reminder / snooze_reminder — без ownership-GET,
+когда id уже из FSM.
 """
 
 from __future__ import annotations
@@ -492,6 +493,68 @@ def insert_food_log(
     row = _first_record(payload)
     if row is None:
         raise NocoDBError("insert_food_log: пустой ответ")
+    return _normalize_food_log(row)
+
+
+# PATCH полей food_logs по id. check_owner=True → GET и проверка связи users.
+# Используется флоу «Изменить блюдо» после правок через Gemini (из FSM — check_owner=False).
+def update_food_log(
+    user_id: int,
+    log_id: int,
+    *,
+    title: str,
+    calories: int,
+    proteins: float,
+    fats: float,
+    carbs: float,
+    portion_g: float,
+    details_json: dict[str, Any] | None = None,
+    check_owner: bool = True,
+) -> dict[str, Any] | None:
+    if check_owner:
+        try:
+            payload = call_api("GET", records_url(TABLE_FOOD_LOGS, log_id))
+        except NocoDBError as e:
+            if e.status == 404:
+                return None
+            raise
+        row = _first_record(payload)
+        if row is None:
+            return None
+        owner = _link_user_id(row)
+        if owner is not None and int(owner) != int(user_id):
+            return None
+
+    fields: dict[str, Any] = {
+        "title": title,
+        "calories": int(calories),
+        "proteins": float(proteins),
+        "fats": float(fats),
+        "carbs": float(carbs),
+        "portion_g": float(portion_g),
+    }
+    if details_json is not None:
+        fields["details_json"] = details_json
+
+    payload = call_api(
+        "PATCH",
+        records_url(TABLE_FOOD_LOGS),
+        body={"id": log_id, "fields": fields},
+    )
+    row = _first_record(payload)
+    if row is None:
+        # Некоторые ответы PATCH без records — перечитаем
+        try:
+            payload = call_api("GET", records_url(TABLE_FOOD_LOGS, log_id))
+        except NocoDBError as e:
+            if e.status == 404:
+                return None
+            raise
+        row = _first_record(payload)
+        if row is None:
+            return None
+    if "id" not in row:
+        row["id"] = log_id
     return _normalize_food_log(row)
 
 
