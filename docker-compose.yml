@@ -1,0 +1,13 @@
+# Локальный прогон / деплой NutriSnap-бота (long polling, порты не нужны).
+# Запуск: docker compose up --build
+# Логи: этот терминал или docker compose logs -f; файл ./logs/bot.log
+services:
+  bot:
+    build: .
+    container_name: nutrisnap-bot
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      # Файл должен существовать на хосте до первого up (иначе Docker создаст каталог).
+      - ./.reminder_day_keys.json:/app/.reminder_day_keys.json

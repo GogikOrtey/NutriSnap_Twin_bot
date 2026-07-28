@@ -24,11 +24,14 @@ NutriSnap_Twin_bot/
 ├── test_4_tg_bot.py       # Минимальный каркас бота (/start + кнопка)
 ├── img_1.jpg              # Тестовое фото для локального запуска
 ├── requirements.txt       # pip-зависимости (в т.ч. aiohttp-socks)
-├── .env                   # Секреты (не в git)
+├── Dockerfile             # Образ Python 3.10-slim → python main.py
+├── docker-compose.yml     # Сервис bot: env_file .env, volumes logs + day keys
+├── .dockerignore          # .env, logs, Старое/, тесты, *.md — вне контекста сборки
+├── .env                   # Секреты (не в git; в образ не копируется)
 ├── .env.example           # Шаблон переменных окружения (+ LOG_LEVEL)
 ├── .gitignore             # в т.ч. logs/, *.log
-├── logs/                  # bot.log (+ ротация; не в git)
-├── .reminder_day_keys.json  # Локальный ключ сброса is_triggered_today (не в git)
+├── logs/                  # bot.log (+ ротация; не в git; volume в compose)
+├── .reminder_day_keys.json  # Локальный ключ сброса is_triggered_today (не в git; volume)
 ├── backlog.md             # Личный бэклог (не править агентом)
 └── Старое/                # Устаревшие эксперименты (не использовать как основу)
 ```
@@ -222,6 +225,15 @@ main.py
 
 - `python-dotenv`, `google-genai`, `httpx`, `pydantic`, `aiogram`, `aiohttp-socks`, `Pillow`, `timezonefinder`, `geopy`
 - Список в `requirements.txt`.
+
+## Docker (локально Windows / далее VPS)
+
+- `Dockerfile`: `python:3.10-slim` (паритет с локальной 3.10.10), `CMD ["python", "main.py"]`, `PYTHONUNBUFFERED=1`.
+- `docker-compose.yml`: сервис `bot`, `env_file: .env`, volumes `./logs` и `./.reminder_day_keys.json` (файл на хосте должен существовать до первого `up`).
+- Локальный тест (Docker Desktop / WSL2): `docker compose up --build` из корня. Прокси в `.env` пустой — «Telegram напрямую».
+- Логи: терминал / `docker compose logs -f` / `./logs/bot.log`. Стоп: `Ctrl+C`, затем при необходимости `docker compose down`.
+- Не гонять параллельно `python main.py` и контейнер с тем же `TELEGRAM_BOT_API_KEY`.
+- На VPS позже: mihomo + `OUTBOUND_HTTPS_PROXY` (sidecar в compose пока не включён).
 
 ## Деплой VPS (Selectel / SkyNode-бот)
 
