@@ -12,7 +12,8 @@ food_recognition.py — FSM-флоу распознавания еды для Nu
 Как устроен файл (блоки сверху вниз)
 ------------------------------------
 
-1. Импорты и конфиг (таймауты, очередь моделей, callback_data, тексты кнопок).
+1. Импорты и конфиг (таймауты, очередь моделей, callback_data, тексты кнопок,
+   параметры сжатия фото перед Gemini).
 2. Промпты PHOTO_PROMPT / TEXT_PROMPT.
 3. FoodFlow (FSM), FoodResult (Pydantic-схема), клиент Gemini
    (через proxy_config.make_gemini_client — точечный прокси на VPS), Router.
@@ -20,13 +21,14 @@ food_recognition.py — FSM-флоу распознавания еды для Nu
    analyze_food_log_edit — свободная правка записи дневника).
 5. Нормализация и форматирование результата.
 6. Клавиатуры confirm / label / cancel / edit-menu (+ «🏠 Главное меню»).
-7. Утилиты (save_to_console, persist_confirmed_food, download_photo_temp, parse_food_result,
-   parse_food_log_edit).
+7. Утилиты (save_to_console, persist_confirmed_food, prepare_image_for_gemini,
+   download_photo_temp, parse_food_result, parse_food_log_edit).
 8. Confirm UI (show/finalize/schedule/handle_ai_result).
 9. Хендлеры: фото, подсказка, вес, текст, callbacks, меню правок.
 10. setup_food_recognition — MemoryStorage + тексты меню / «🏠» + on_food_saved; возвращает router.
     Reply «🏠» скрыта с отправки фото/текста до ✅ или отмены после «✏️ Изменить».
     После ✅/авто-✅ вызывается on_food_saved (в main — INSERT food_logs + reminders).
+    Фото перед Files API: resize ≤1024px + JPEG q=80.
 """
 
 from __future__ import annotations
@@ -59,6 +61,7 @@ from aiogram.types import (
 )
 from dotenv import load_dotenv
 from google import genai
+from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
 from error_notify import (
@@ -87,6 +90,10 @@ DEFAULT_PORTION_G = 100.0
 MIN_CONFIRM_MSG_WIDTH = 30
 # Прозрачный символ-паддинг ширины (braille blank); при ✅ снимается вместе с кнопками.
 WIDTH_PAD_CHAR = "⠀"
+
+# Предобработка фото перед Gemini Files API (меньше токенов и быстрее upload).
+IMAGE_MAX_SIDE_PX = 1024
+IMAGE_JPEG_QUALITY = 80
 
 # Очередь моделей для попыток (fallback при ошибке/таймауте).
 MODELS_QUEUE = [
@@ -602,13 +609,69 @@ async def persist_confirmed_food(
         await _on_food_saved(user_id, result, bot, chat_id)
 
 
-# Скачивает Telegram-фото по file_id во временный .jpg и возвращает путь.
+# Сжимает фото для Gemini: длинная сторона ≤1024px, JPEG q=80.
+# Учитывает EXIF-ориентацию; RGBA/P → RGB. Исходный файл удаляет, если путь другой.
+# Используется в download_photo_temp перед Files API.
+def prepare_image_for_gemini(src_path: Path) -> Path:
+    src_path = Path(src_path)
+    src_size = src_path.stat().st_size if src_path.exists() else 0
+
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        out_path = Path(tmp.name)
+
+    try:
+        with Image.open(src_path) as opened:
+            img = ImageOps.exif_transpose(opened)
+            if img.mode in ("RGBA", "LA", "P"):
+                rgba = img.convert("RGBA")
+                background = Image.new("RGB", rgba.size, (255, 255, 255))
+                background.paste(rgba, mask=rgba.split()[-1])
+                img = background
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+
+            w, h = img.size
+            long_side = max(w, h)
+            if long_side > IMAGE_MAX_SIDE_PX:
+                scale = IMAGE_MAX_SIDE_PX / float(long_side)
+                new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+            out_w, out_h = img.size
+            img.save(
+                out_path,
+                format="JPEG",
+                quality=IMAGE_JPEG_QUALITY,
+                optimize=True,
+                progressive=True,
+            )
+            out_size = out_path.stat().st_size
+    except Exception:
+        out_path.unlink(missing_ok=True)
+        raise
+
+    if out_path.resolve() != src_path.resolve():
+        src_path.unlink(missing_ok=True)
+
+    print(
+        f"Фото для Gemini: {src_size // 1024} КБ -> {out_size // 1024} КБ "
+        f"({out_w}x{out_h}, q={IMAGE_JPEG_QUALITY})",
+        flush=True,
+    )
+    return out_path
+
+
+# Скачивает Telegram-фото, сжимает для Gemini и возвращает путь к .jpg.
 # Используется в on_photo и при повторном анализе после подсказки.
 async def download_photo_temp(bot: Bot, file_id: str) -> Path:
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tmp:
         temp_path = Path(tmp.name)
-    await bot.download(file_id, destination=temp_path)
-    return temp_path
+    try:
+        await bot.download(file_id, destination=temp_path)
+        return await asyncio.to_thread(prepare_image_for_gemini, temp_path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 # Парсит сырой JSON-ответ модели в FoodResult; при ошибке возвращает None.

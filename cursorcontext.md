@@ -121,6 +121,7 @@ main.py
 - Клиент Gemini через `make_gemini_client` (прокси на VPS).
 - `_generate_with_fallback`: промежуточные сбои моделей (503/504 и т.п.) — только `print` в консоль, без письма; на почту уходит, когда все попытки исчерпаны и хендлер зовёт `report_service_problem` (пустой/неразобранный ответ). Принимает `response_schema` (FoodResult / FoodLogEditResult).
 - `analyze_food_log_edit` + `parse_food_log_edit`: свободная текстовая правка записи дневника (status applied/unclear/irrelevant) → UPDATE в main.
+- Фото перед Files API: `prepare_image_for_gemini` (Pillow) — EXIF-ориентация, длинная сторона ≤1024px, JPEG q=80; вызывается из `download_photo_temp`.
 - Без изменений флоу Gemini/FSM распознавания; `persist_confirmed_food` → консоль + `on_food_saved` (запись в БД в main).
 - Статус анализа (`send_analysis_status`): «✨ Анализирую…» сразу с `ReplyKeyboardRemove` (без пустого stub+delete). Edit в превью обычно ок; fallback — новое сообщение.
 
@@ -206,7 +207,7 @@ main.py
 
 ## Зависимости (по коду)
 
-- `python-dotenv`, `google-genai`, `httpx`, `pydantic`, `aiogram`, `aiohttp-socks`, `timezonefinder`, `geopy`
+- `python-dotenv`, `google-genai`, `httpx`, `pydantic`, `aiogram`, `aiohttp-socks`, `Pillow`, `timezonefinder`, `geopy`
 - Список в `requirements.txt`.
 
 ## Деплой VPS (Selectel / SkyNode-бот)
