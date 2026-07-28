@@ -3,13 +3,15 @@
 
 Зачем: единый HTTP-транспорт и хелперы таблиц users / food_logs / reminders
 вместо in-memory stub в main.py.
-Используется: main.py (профиль, дневник, напоминания, usage-reminder),
-проверка запросов — через requests_DB_test.py до встраивания.
+Используется: main.py (профиль, дневник, напоминания, usage-reminder,
+retention food_logs), проверка запросов — через requests_DB_test.py
+до встраивания.
 Опционально check_owner=False у update_food_log / delete_food_log /
 set_reminder_active / delete_reminder / snooze_reminder — без ownership-GET,
 когда id уже из FSM.
 users.last_food_logged_on — логическая дата последней еды (usage-reminder
 без N+1 к food_logs); list_all_users — для reminders_maintenance.
+delete_food_logs_older_than — суточная очистка по logged_date (retention).
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from dotenv import load_dotenv
@@ -31,6 +34,9 @@ NOCODB_BASE_ID = "p6iywpukq1yiryf"
 TABLE_USERS = "meooj41uwpyrx9t"
 TABLE_FOOD_LOGS = "mqhuz4edun8xpdc"
 TABLE_REMINDERS = "m04n35tamrsu1wn"
+
+# Сколько дней хранить food_logs (по logged_date). Используется cleanup-лупом.
+FOOD_LOG_RETENTION_DAYS = 100
 
 API_KEY = os.getenv("NOCODB_SKYNODE_API_KEY", "").strip()
 
@@ -634,6 +640,61 @@ def delete_food_log(
         body={"id": log_id},
     )
     return True
+
+
+# Удаляет food_logs с logged_date старше days дней (UTC today − days).
+# List по where + bulk DELETE батчами. Возвращает число удалённых.
+# Используется food_logs_cleanup_loop в main.py и requests_DB_test.
+def delete_food_logs_older_than(
+    days: int = FOOD_LOG_RETENTION_DAYS,
+    *,
+    page_size: int = 200,
+    delete_batch_size: int = 100,
+) -> int:
+    if days < 1:
+        raise ValueError("days must be >= 1")
+    cutoff = (
+        datetime.now(timezone.utc).date() - timedelta(days=days)
+    ).isoformat()
+    where = f"(logged_date,lt,{cutoff})"
+
+    ids: list[int] = []
+    page = 1
+    while True:
+        payload = call_api(
+            "GET",
+            records_url(TABLE_FOOD_LOGS),
+            query={
+                "where": where,
+                "pageSize": str(page_size),
+                "page": str(page),
+            },
+        )
+        rows = _list_records(payload)
+        for row in rows:
+            rid = row.get("id")
+            if rid is None:
+                continue
+            ids.append(int(rid))
+        if len(rows) < page_size:
+            break
+        page += 1
+        if page > 500:
+            break
+
+    if not ids:
+        return 0
+
+    deleted = 0
+    for i in range(0, len(ids), delete_batch_size):
+        batch = ids[i : i + delete_batch_size]
+        call_api(
+            "DELETE",
+            records_url(TABLE_FOOD_LOGS),
+            body=[{"id": rid} for rid in batch],
+        )
+        deleted += len(batch)
+    return deleted
 
 
 # ---------------------------------------------------------------------------

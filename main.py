@@ -22,8 +22,9 @@ FAQ в настройках — обзор возможностей и отве�
 6. UserNotRegisteredError → error-handler → та же ветка, что /start;
    сбои БД/Gemini/сети → TECH_ISSUES_USER_TEXT + письмо 🟧🍎;
    прочие необработанные update-ошибки → report_console_error (🟨⬛🍎).
-7. main() — хуки error_notify + polling + фоновый usage-reminder (13:00)
-   и reminders_maintenance (сброс is_triggered_today + пропущенные окна);
+7. main() — хуки error_notify + polling + фоновый usage-reminder (13:00),
+   reminders_maintenance (сброс is_triggered_today + пропущенные окна)
+   и food_logs_cleanup (удаление записей с logged_date старше 100 дней);
    Telegram-сессия через прокси при TELEGRAM_PROXY / OUTBOUND_HTTPS_PROXY
    (VPS mihomo), иначе напрямую.
 8. DropStaleMessagesMiddleware — сообщения старше 10 мин (очередь после
@@ -414,6 +415,8 @@ REMINDER_FREEZE_AFTER_DAYS = 3
 # Фоновый тик раз в час: сброс is_triggered_today + «окно пропущено»
 # (разные TZ пользователей — почасовой шаг проще точечных окон).
 REMINDER_MAINTENANCE_INTERVAL_SEC = 3600
+# Суточная очистка food_logs старше FOOD_LOG_RETENTION_DAYS (по logged_date).
+FOOD_LOGS_CLEANUP_INTERVAL_SEC = 86400
 # Файл с последней логической датой сброса флагов (переживает рестарт процесса).
 _REMINDER_DAY_KEYS_PATH = Path(__file__).resolve().parent / ".reminder_day_keys.json"
 
@@ -4372,6 +4375,28 @@ async def reminders_maintenance_loop(bot: Bot) -> None:
         await asyncio.sleep(REMINDER_MAINTENANCE_INTERVAL_SEC)
 #endregion
 
+#region Food logs retention (старше 100 дней)
+# Фоновый цикл раз в сутки: удаляет food_logs с logged_date старше
+# FOOD_LOG_RETENTION_DAYS. Старт sleep(55) — оффсет от usage (40) и
+# reminders_maintenance (25), чтобы три тика NocoDB не бились после рестарта.
+# Используется main() рядом с polling.
+async def food_logs_cleanup_loop() -> None:
+    await asyncio.sleep(55)
+    while True:
+        try:
+            deleted = await asyncio.to_thread(
+                db.delete_food_logs_older_than, db.FOOD_LOG_RETENTION_DAYS
+            )
+            print(
+                f"🟦 food_logs cleanup: удалено {deleted} "
+                f"(старше {db.FOOD_LOG_RETENTION_DAYS} дн.)",
+                flush=True,
+            )
+        except Exception as e:
+            report_error_auto(f"food_logs_cleanup_loop tick failed: {e}", exc=e)
+        await asyncio.sleep(FOOD_LOGS_CLEANUP_INTERVAL_SEC)
+#endregion
+
 #region Запуск
 # Точка входа: проверка ключей и long-polling.
 # Telegram-сессия: при TELEGRAM_PROXY/OUTBOUND_HTTPS_PROXY — через локальный
@@ -4413,12 +4438,16 @@ async def main() -> None:
     reminders_task = asyncio.create_task(
         reminders_maintenance_loop(bot), name="reminders-maintenance-loop"
     )
+    cleanup_task = asyncio.create_task(
+        food_logs_cleanup_loop(), name="food-logs-cleanup-loop"
+    )
     try:
         await dp.start_polling(bot)
     finally:
         usage_task.cancel()
         reminders_task.cancel()
-        for task in (usage_task, reminders_task):
+        cleanup_task.cancel()
+        for task in (usage_task, reminders_task, cleanup_task):
             try:
                 await task
             except asyncio.CancelledError:

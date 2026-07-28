@@ -69,9 +69,10 @@ main.py
 - `_on_survey_complete`: сразу текст про usage-reminder + inline «🟩 Хорошо»; `set_profile` стартует параллельно (`_survey_profile_saves`). По кнопке — await upsert → напоминание закрепить/положить в важную папку (`SURVEY_PIN_REMINDER_TEXT`) с inline «Жду выполнения (15)»…«(1)» → «Готово» (клик во время отсчёта игнорируется) → «всё настроено» + `show_recognize`.
 - Usage-reminder: если `usage_reminder_enabled` и до 13:00 (TZ юзера) `last_food_logged_on` ≠ логический today — фоновый `usage_reminder_loop` (раз в час, старт sleep 40 с) шлёт сообщение и пишет `usage_reminder_sent_on`. Тик: только `list_users_with_usage_reminder` (без N+1 к food_logs). Вкл/выкл: Настройки → Напоминания → «📲 Напоминание использования бота».
 - Reminders maintenance (`reminders_maintenance_loop`, раз в час, старт sleep 25 с): `list_all_reminders` + `list_all_users` (без per-user GET) → сброс `is_triggered_today` при смене логических суток; ключ даты в `.reminder_day_keys.json`. Пропущенные окна: `now > time_end`, ещё не triggered, не frozen → «⏰ Напоминание пропущено» + mark triggered.
+- Food logs retention (`food_logs_cleanup_loop`, раз в сутки / 86400 с, старт sleep 55 с): `delete_food_logs_older_than(FOOD_LOG_RETENTION_DAYS=100)` — удаляет записи с `logged_date` &lt; today_UTC−100; в консоль пишет число удалённых.
 - Профиль: «🔄 Обновить данные пользователя» → `start_initial_survey`. Смена goal → пересчёт ккал через `resolve_recommended_calories` (Mifflin–St Jeor + Gemini fallback).
 - ReplyKeyboard / Inline / логическая дата / FAQ / SMTP feedback — без изменений UX.
-- `main()`: `install_error_email_hooks` + `attach_asyncio_error_handler` + `usage_reminder_loop` + `reminders_maintenance_loop` перед polling.
+- `main()`: `install_error_email_hooks` + `attach_asyncio_error_handler` + `usage_reminder_loop` + `reminders_maintenance_loop` + `food_logs_cleanup_loop` перед polling.
 
 ### `error_notify.py`
 
@@ -87,15 +88,16 @@ main.py
 
 - Транспорт: `urllib` + `xc-token` + UTF-8 JSON; `NocoDBError` при HTTP ≠ 2xx.
 - Table IDs: users=`meooj41uwpyrx9t`, food_logs=`mqhuz4edun8xpdc`, reminders=`m04n35tamrsu1wn`.
-- CRUD: `get_user` / `create_user` / `update_user` / `delete_user` / `upsert_profile`; food_logs list/insert/`update_food_log`/delete; reminders CRUD + toggle/snooze/mark_triggered + `list_all_reminders`; usage-reminder: `set_usage_reminder_enabled` / `mark_usage_reminder_sent` / `mark_last_food_logged_on` / `list_users_with_usage_reminder` / `list_all_users`.
+- CRUD: `get_user` / `create_user` / `update_user` / `delete_user` / `upsert_profile`; food_logs list/insert/`update_food_log`/delete + `delete_food_logs_older_than` (retention по `logged_date`); reminders CRUD + toggle/snooze/mark_triggered + `list_all_reminders`; usage-reminder: `set_usage_reminder_enabled` / `mark_usage_reminder_sent` / `mark_last_food_logged_on` / `list_users_with_usage_reminder` / `list_all_users`.
 - Связь владельца: поле Link `users: {id: telegram_id}` (не колонка `user_id`).
 - `sort` v3: JSON `[{"field":"…","direction":"asc"}]`.
 - `emoji` только внутри `details_json`; при чтении поднимается в плоское поле для UI.
 - Enum как в боте: `gender` male/female, `goal` weight_loss/muscle_gain/maintain.
+- Retention: `FOOD_LOG_RETENTION_DAYS=100`; cleanup list `where (logged_date,lt,cutoff)` + bulk DELETE батчами по 100 id.
 
 ### `requests_DB_test.py`
 
-- Песочница поверх `db_nocodb`: `test_users_crud`, `test_food_logs_crud`, `test_reminders_crud`.
+- Песочница поверх `db_nocodb`: `test_users_crud`, `test_food_logs_crud`, `test_food_logs_retention`, `test_reminders_crud`.
 - Правило: новый запрос сначала прогонять здесь (2xx + до/после для DELETE), потом встраивать в бота. После 5 неудач подряд при верной доке — стоп, проверить NocoDB IDE.
 
 ### `requests_DB_latency_test.py`

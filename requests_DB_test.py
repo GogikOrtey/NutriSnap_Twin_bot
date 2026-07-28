@@ -239,6 +239,87 @@ def test_food_logs_crud() -> None:
     print("\n=== food_logs CRUD: all passed ===\n")
 
 
+def test_food_logs_retention() -> None:
+    """Старая запись (110 дней) удаляется cleanup'ом; свежая остаётся."""
+    print("\n=== test_food_logs_retention ===\n")
+
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        db.delete_user(TEST_USER_ID)
+    except db.NocoDBError:
+        pass
+
+    now = int(time.time())
+    db.create_user(
+        {
+            "id": TEST_USER_ID,
+            "first_name": "RetentionTest",
+            "gender": "male",
+            "age": 25,
+            "height": 180.0,
+            "weight": 80.0,
+            "activity_level": 1.2,
+            "goal": "maintain",
+            "daily_calories": 2000,
+            "timezone": "Europe/Moscow",
+            "day_change_hour": 4,
+            "created_at": now,
+            "last_active_at": now,
+        }
+    )
+
+    today = datetime.now(timezone.utc).date()
+    old_date = (today - timedelta(days=110)).isoformat()
+    fresh_date = today.isoformat()
+
+    old = db.insert_food_log(
+        TEST_USER_ID,
+        title="Старое блюдо retention",
+        calories=100,
+        proteins=1.0,
+        fats=1.0,
+        carbs=1.0,
+        portion_g=50.0,
+        logged_date=old_date,
+        details_json={"emoji": "🦴", "dish": "Старое блюдо retention"},
+    )
+    fresh = db.insert_food_log(
+        TEST_USER_ID,
+        title="Свежее блюдо retention",
+        calories=200,
+        proteins=2.0,
+        fats=2.0,
+        carbs=2.0,
+        portion_g=100.0,
+        logged_date=fresh_date,
+        details_json={"emoji": "🥗", "dish": "Свежее блюдо retention"},
+    )
+    old_id = int(old["id"])
+    fresh_id = int(fresh["id"])
+    _ok("POST old + fresh food_logs", old_id > 0 and fresh_id > 0)
+
+    deleted_n = db.delete_food_logs_older_than(100)
+    _ok("cleanup deleted >= 1", deleted_n >= 1, f"deleted={deleted_n}")
+
+    old_rows = db.get_food_logs_for_date(TEST_USER_ID, old_date)
+    fresh_rows = db.get_food_logs_for_date(TEST_USER_ID, fresh_date)
+    _ok(
+        "old food_log gone",
+        all(r["id"] != old_id for r in old_rows),
+        f"count={len(old_rows)}",
+    )
+    _ok(
+        "fresh food_log kept",
+        any(r["id"] == fresh_id for r in fresh_rows),
+        f"count={len(fresh_rows)}",
+    )
+
+    db.delete_food_log(TEST_USER_ID, fresh_id, check_owner=False)
+    db.delete_user(TEST_USER_ID)
+    print("\n=== food_logs retention: all passed ===\n")
+
+
 # ---------------------------------------------------------------------------
 # reminders
 # ---------------------------------------------------------------------------
@@ -325,4 +406,5 @@ if __name__ == "__main__":
     # Полный прогон всех таблиц:
     test_users_crud()
     test_food_logs_crud()
+    test_food_logs_retention()
     test_reminders_crud()
