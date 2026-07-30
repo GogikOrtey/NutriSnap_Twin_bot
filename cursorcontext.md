@@ -76,6 +76,7 @@ main.py
 - Главный экран idle: `show_main_menu` / `refresh_main_menu_card` ставят таймер `MAIN_IDLE_REFRESH_SEC` (15 мин); если всё ещё `menu_screen=main` и тот же `ui_message_id` — `edit_message_reply_markup` с inline «🔄 Обновить» (`CALLBACK_MAIN_REFRESH`). Клик → пересборка карточки «сегодня» на месте и новый таймер. Задачи в `_main_idle_refresh_tasks`.
 - Дневник / выгрузка / настройки / reminders — через обёртки `get_user` (кэш), `get_food_logs_*`, `set_*` (+ invalidate), `add_reminder`, … → `db_nocodb`. Из async-хендлеров — только через `run_db(...)` (`asyncio.to_thread`), чтобы urllib NocoDB не блокировал event loop.
 - Кэш `users` в `main.py`: `_user_cache` по telegram_id; `set_*` / `set_profile` — optimistic `_patch_user_cache` / `_put_user_cache` (без лишнего GET); `invalidate_user_cache` — fallback если кэша ещё нет. Singleflight + `_user_gen` для гонок.
+- Кэш `food_logs` в `main.py`: `_food_logs_cache` по `(telegram_id, logged_date)`; `get_food_logs_for_date` — hit из RAM (копия строк), miss → GET + put; max 7 дат на юзера. Insert/update/delete — optimistic `_upsert_food_log_in_cache` / `_remove_food_log_from_cache`. `set_day_change_hour` / `set_profile` → `invalidate_food_logs_cache(user_id)` (сдвиг логических суток). Inline «🔄 Обновить» → `force=True` (свежий GET). Выгрузка `get_food_logs_range` без кэша.
 - Меньше roundtrip: `trigger_reminders_for_food` — один list + параллельные PATCH; `show_settings` — user∥reminders; toggle/delete reminder и delete food_log из FSM без ownership-GET; списки reminders/food_logs в FSM на пагинации.
 - После ✅ еды: `_on_food_saved` → `insert_food_log_from_result` (emoji в `details_json` + PATCH `users.last_food_logged_on`); затем «Учтено ✅»; затем `_on_after_food_ack` → `notify_reminders_after_food` / `trigger_reminders_for_food` (чтобы reminders шли после ack в чате).
 - Дневник «✏️ Изменить блюдо»: выбор номера → свободный текст → Gemini (`analyze_food_log_edit`) → `update_food_log` + сообщение об успехе. Удаление — сразу DELETE + «✅ Блюдо удалено».
@@ -169,6 +170,9 @@ main.py
 
 - БД развёрнута на VPS **SkyNode**; доступ из бота — **только через API NocoDB** (не прямой SQL).
 - База API: `https://skynode.nocodb.api.gogortey.ru`
+- На SkyNode: NocoDB `host` network → `:8080`; снаружи nginx TLS `443` → `proxy_pass http://127.0.0.1:8080`. DNS домена = IP VPS.
+- Latency на VPS (GET users, 2026-07-30): новый коннект как у urllib — public ~57 ms p50, `http://127.0.0.1:8080` ~27 ms p50 (~2× быстрее); keep-alive — все пути ~27 ms (выигрыш localhost только на cold connect: TLS/nginx).
+- ~27 ms на localhost — не сеть (loopback/`curl` корня `:8080` ~1 ms), а слой NocoDB: xc-token → Postgres → JSON Data API. Прямой SQL к Postgres был бы порядка 1–5 ms; через NocoDB это ожидаемая цена API.
 - Base ID: `p6iywpukq1yiryf`
 - Swagger: `https://skynode.nocodb.api.gogortey.ru/api/v3/meta/bases/p6iywpukq1yiryf/swagger`
 - Ключ: `NOCODB_SKYNODE_API_KEY` в `.env` → заголовок `xc-token`.

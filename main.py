@@ -16,7 +16,8 @@ FAQ в настройках — обзор возможностей и отве�
 ----------------
 1. Импорты, .env, константы кнопок, MenuFlow.
 2. Хранилище NocoDB (db_nocodb): users (кэш по telegram_id + singleflight) /
-   food_logs / reminders. Sync-HTTP из async — через run_db (asyncio.to_thread).
+   food_logs (кэш по user_id+logged_date) / reminders. Sync-HTTP из async —
+   через run_db (asyncio.to_thread).
 3. SMTP обратной связи (send_feedback_email) + форматтеры / Reply-клавиатуры.
 4. UI-хелперы: Reply → новое сообщение; Inline дневника → edit; чистка «Выберите действие:».
 5. Router меню + хендлеры; /start → опрос или меню по БД;
@@ -766,6 +767,12 @@ _user_inflight: dict[int, Future[dict[str, Any] | None]] = {}
 _user_inflight_gen: dict[int, int] = {}
 _user_cache_lock = threading.Lock()
 
+# Кэш food_logs за день: (telegram_id, YYYY-MM-DD) → список записей (process-local).
+# Меню/дневник читают отсюда; мутации патчат или сбрасывают ключ.
+_FOOD_LOGS_CACHE_MAX_DATES = 7
+_food_logs_cache: dict[tuple[int, str], list[dict[str, Any]]] = {}
+_food_logs_cache_lock = threading.Lock()
+
 _T = TypeVar("_T")
 
 
@@ -898,10 +905,117 @@ def touch_user_activity(user_id: int) -> None:
     _patch_user_cache(user_id, {"last_active_at": now})
 
 
-# Записи дневника за логическую дату YYYY-MM-DD.
-# Используется главным меню, дневником, удалением и выгрузкой.
-def get_food_logs_for_date(user_id: int, logged_date: str) -> list[dict[str, Any]]:
-    return db.get_food_logs_for_date(user_id, logged_date)
+# Копия одной записи food_logs (details_json — отдельный dict).
+# Используется кэшем, чтобы хендлеры/FSM не портили общий список.
+def _clone_food_log_row(row: dict[str, Any]) -> dict[str, Any]:
+    out = dict(row)
+    details = out.get("details_json")
+    if isinstance(details, dict):
+        out["details_json"] = dict(details)
+    return out
+
+
+# Копия списка food_logs для возврата наружу или записи в кэш.
+# Используется get_food_logs_for_date и _put_food_logs_cache.
+def _clone_food_logs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_clone_food_log_row(r) for r in rows]
+
+
+# Оставляет не больше _FOOD_LOGS_CACHE_MAX_DATES дат на user_id (старые YYYY-MM-DD).
+# Используется _put_food_logs_cache (вызывать под _food_logs_cache_lock).
+def _trim_food_logs_cache_locked(user_id: int) -> None:
+    dates = sorted(d for (uid, d) in _food_logs_cache if uid == user_id)
+    while len(dates) > _FOOD_LOGS_CACHE_MAX_DATES:
+        _food_logs_cache.pop((user_id, dates.pop(0)), None)
+
+
+# Кладёт список записей за дату в кэш (копия).
+# Используется get_food_logs_for_date после GET и optimistic-патчами.
+def _put_food_logs_cache(
+    user_id: int, logged_date: str, rows: list[dict[str, Any]]
+) -> None:
+    if not user_id or not logged_date:
+        return
+    key = (int(user_id), str(logged_date))
+    with _food_logs_cache_lock:
+        _food_logs_cache[key] = _clone_food_logs(rows)
+        _trim_food_logs_cache_locked(int(user_id))
+
+
+# Сбрасывает кэш food_logs: одну дату или все даты пользователя.
+# Используется при смене TZ/day_change_hour и как fallback мутаций.
+def invalidate_food_logs_cache(
+    user_id: int, logged_date: str | None = None
+) -> None:
+    if not user_id:
+        return
+    uid = int(user_id)
+    with _food_logs_cache_lock:
+        if logged_date is not None:
+            _food_logs_cache.pop((uid, str(logged_date)), None)
+            return
+        for key in [k for k in _food_logs_cache if k[0] == uid]:
+            del _food_logs_cache[key]
+
+
+# Вставляет/заменяет запись в кэше дня, если день уже закеширован.
+# Используется после insert/update food_logs (без лишнего GET).
+def _upsert_food_log_in_cache(user_id: int, row: dict[str, Any]) -> None:
+    if not user_id or not row:
+        return
+    logged_date = str(row.get("logged_date") or "")
+    log_id = row.get("id")
+    if not logged_date or log_id is None:
+        return
+    key = (int(user_id), logged_date)
+    with _food_logs_cache_lock:
+        cached = _food_logs_cache.get(key)
+        if cached is None:
+            return
+        clone = _clone_food_log_row(row)
+        replaced = False
+        for i, old in enumerate(cached):
+            if int(old.get("id") or 0) == int(log_id):
+                cached[i] = clone
+                replaced = True
+                break
+        if not replaced:
+            cached.append(clone)
+        cached.sort(key=lambda r: int(r.get("created_at") or 0))
+
+
+# Удаляет запись из любого закешированного дня пользователя.
+# Используется после delete_food_log.
+def _remove_food_log_from_cache(user_id: int, log_id: int) -> None:
+    if not user_id or not log_id:
+        return
+    uid = int(user_id)
+    lid = int(log_id)
+    with _food_logs_cache_lock:
+        for key, rows in list(_food_logs_cache.items()):
+            if key[0] != uid:
+                continue
+            filtered = [r for r in rows if int(r.get("id") or 0) != lid]
+            if len(filtered) != len(rows):
+                _food_logs_cache[key] = filtered
+                return
+
+
+# Записи дневника за логическую дату YYYY-MM-DD (кэш process-local).
+# force=True — всегда GET в NocoDB и перезапись кэша (кнопка «🔄 Обновить»).
+# Используется главным меню, дневником, удалением и выгрузкой «сегодня».
+def get_food_logs_for_date(
+    user_id: int, logged_date: str, *, force: bool = False
+) -> list[dict[str, Any]]:
+    key = (int(user_id), str(logged_date))
+    if not force:
+        with _food_logs_cache_lock:
+            cached = _food_logs_cache.get(key)
+            if cached is not None:
+                return _clone_food_logs(cached)
+    rows = db.get_food_logs_for_date(user_id, logged_date)
+    _put_food_logs_cache(user_id, logged_date, rows)
+    return _clone_food_logs(rows)
 
 
 # Записи за диапазон дат [date_from, date_to] включительно.
@@ -912,15 +1026,18 @@ def get_food_logs_range(
     return db.get_food_logs_range(user_id, date_from, date_to)
 
 
-# Удаление записи food_logs по id (только свои).
+# Удаление записи food_logs по id (только свои) + патч кэша дня.
 # Используется флоу «Удалить блюдо» в дневнике.
 def delete_food_log(
     user_id: int, log_id: int, *, check_owner: bool = True
 ) -> bool:
-    return db.delete_food_log(user_id, log_id, check_owner=check_owner)
+    ok = db.delete_food_log(user_id, log_id, check_owner=check_owner)
+    if ok:
+        _remove_food_log_from_cache(user_id, log_id)
+    return ok
 
 
-# PATCH полей food_logs после текстовой правки через Gemini.
+# PATCH полей food_logs после текстовой правки через Gemini + патч кэша.
 # Используется флоу «Изменить блюдо» (из FSM — check_owner=False).
 def update_food_log(
     user_id: int,
@@ -935,7 +1052,7 @@ def update_food_log(
     details_json: dict[str, Any] | None = None,
     check_owner: bool = True,
 ) -> dict[str, Any] | None:
-    return db.update_food_log(
+    row = db.update_food_log(
         user_id,
         log_id,
         title=title,
@@ -947,6 +1064,11 @@ def update_food_log(
         details_json=details_json,
         check_owner=check_owner,
     )
+    if row is not None:
+        _upsert_food_log_in_cache(user_id, row)
+    else:
+        invalidate_food_logs_cache(user_id)
+    return row
 
 
 # INSERT food_logs после ✅ распознавания (emoji → details_json).
@@ -971,6 +1093,7 @@ def insert_food_log_from_result(
         logged_date=logged_date,
         details_json=details,
     )
+    _upsert_food_log_in_cache(user_id, row)
     try:
         db.mark_last_food_logged_on(user_id, logged_date)
         _patch_user_cache(user_id, {"last_food_logged_on": str(logged_date)})
@@ -983,10 +1106,12 @@ def insert_food_log_from_result(
 
 
 # Обновление day_change_hour в users + optimistic patch кэша.
+# Сбрасывает кэш food_logs: логическая «сегодня» сдвигается.
 # Используется настройкой «Время смены суток».
 def set_day_change_hour(user_id: int, hour: int) -> None:
     db.set_day_change_hour(user_id, hour)
     _patch_user_cache(user_id, {"day_change_hour": int(hour)})
+    invalidate_food_logs_cache(user_id)
 
 
 # Обновление goal в users + optimistic patch кэша.
@@ -1004,6 +1129,7 @@ def set_daily_calories(user_id: int, calories: int) -> None:
 
 
 # Запись полей профиля из первичного опроса + кладёт ответ upsert в кэш.
+# Сбрасывает кэш food_logs (timezone / граница суток могут смениться).
 # Используется on_survey_complete после прохождения initial_survey.
 def set_profile(
     user_id: int,
@@ -1031,6 +1157,7 @@ def set_profile(
         daily_calories=daily_calories,
     )
     _put_user_cache(user_id, row)
+    invalidate_food_logs_cache(user_id)
 
 
 # Вкл/выкл users.usage_reminder_enabled + patch кэша.
@@ -2243,6 +2370,7 @@ async def show_main_menu(
 
 # Пересобирает карточку главного экрана на месте (без новой «пыли»).
 # Используется inline «🔄 Обновить» после простоя на главном.
+# force=True у food_logs — обход кэша, свежий GET из NocoDB.
 async def refresh_main_menu_card(
     message: Message, state: FSMContext, *, user_id: int
 ) -> None:
@@ -2250,7 +2378,7 @@ async def refresh_main_menu_card(
     await state.update_data(diary_offset=0, export_return="main", menu_screen="main")
     user = await run_db(get_user, user_id)
     today = logical_today(user)
-    logs = await run_db(get_food_logs_for_date, user_id, today)
+    logs = await run_db(get_food_logs_for_date, user_id, today, force=True)
     text = format_day_card(
         user,
         today,
