@@ -105,3 +105,5 @@ echo Готово: build запушен. GitHub Actions деплоит на SkyN
 echo.
 timeout /t 2 >nul
 exit /b 0
+
+REM Важно: Добавить число в версии приложения
