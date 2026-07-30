@@ -9,5 +9,6 @@ services:
     restart: unless-stopped
     volumes:
       - ./logs:/app/logs
-      # Файл должен существовать на хосте до первого up (иначе Docker создаст каталог).
+      # Файлы должны существовать на хосте до первого up (иначе Docker создаст каталог).
       - ./.reminder_day_keys.json:/app/.reminder_day_keys.json
+      - ./.reminder_pending_meal.json:/app/.reminder_pending_meal.json

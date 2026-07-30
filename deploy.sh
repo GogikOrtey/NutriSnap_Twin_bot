@@ -16,6 +16,9 @@ mkdir -p logs
 if [[ ! -f .reminder_day_keys.json ]]; then
   echo '{}' > .reminder_day_keys.json
 fi
+if [[ ! -f .reminder_pending_meal.json ]]; then
+  echo '{}' > .reminder_pending_meal.json
+fi
 
 if [[ ! -f .env ]]; then
   echo "ERROR: .env not found in $ROOT — copy secrets before deploy." >&2

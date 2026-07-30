@@ -19,7 +19,8 @@ FAQ в настройках — обзор возможностей и отве�
    food_logs / reminders. Sync-HTTP из async — через run_db (asyncio.to_thread).
 3. SMTP обратной связи (send_feedback_email) + форматтеры / Reply-клавиатуры.
 4. UI-хелперы: Reply → новое сообщение; Inline дневника → edit; чистка «Выберите действие:».
-5. Router меню + хендлеры; /start → опрос или меню по БД; on_food_saved → food_logs + reminders.
+5. Router меню + хендлеры; /start → опрос или меню по БД;
+   on_food_saved → food_logs; on_after_food_ack → reminders (после «Учтено»).
 6. UserNotRegisteredError → error-handler → та же ветка, что /start;
    сбои БД/Gemini/сети → TECH_ISSUES_USER_TEXT + письмо 🟧🍎;
    прочие необработанные update-ошибки → report_console_error (🟨⬛🍎).
@@ -206,6 +207,8 @@ BTN_GOAL_MAINTAIN = "⚖️ Просто отслеживание"
 CALLBACK_DIARY_PREV = "diary:prev"
 CALLBACK_DIARY_NEXT = "diary:next"
 CALLBACK_REM_SNOOZE_PREFIX = "rem:snooze:"
+# Inline под «напоминание пропущено»: ждать ближайший приём (вне окна).
+CALLBACK_REM_DEFER_PREFIX = "rem:defer:"
 CALLBACK_REM_OK_PREFIX = "rem:ok:"
 # Inline под главной карточкой после 15 мин бездействия на главном экране.
 CALLBACK_MAIN_REFRESH = "main:refresh"
@@ -428,6 +431,10 @@ REMINDER_MISSED_CHECK_MINUTE = 5
 FOOD_LOGS_CLEANUP_INTERVAL_SEC = 86400
 # Файл с последней логической датой сброса флагов (переживает рестарт процесса).
 _REMINDER_DAY_KEYS_PATH = Path(__file__).resolve().parent / ".reminder_day_keys.json"
+# Отложенные после пропуска: ждать ближайший приём (переживает рестарт).
+_REMINDER_PENDING_MEAL_PATH = (
+    Path(__file__).resolve().parent / ".reminder_pending_meal.json"
+)
 
 GOAL_LABELS = {
     "weight_loss": "Похудение",
@@ -570,6 +577,177 @@ def _persist_reminder_day_reset() -> None:
         )
     except Exception as e:
         report_console_error(f"persist reminder day keys failed: {e}", exc=e)
+
+
+# Загрузка отложенных после пропуска reminders (ждать ближайший приём).
+# Используется при старте модуля; ключ — reminder_id.
+def _load_reminder_pending_meal() -> dict[int, dict[str, Any]]:
+    try:
+        raw = _REMINDER_PENDING_MEAL_PATH.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        out: dict[int, dict[str, Any]] = {}
+        for key, value in data.items():
+            if not isinstance(value, dict):
+                continue
+            try:
+                rid = int(key)
+                out[rid] = {
+                    "user_id": int(value["user_id"]),
+                    "time_start": str(value.get("time_start") or ""),
+                    "min_calories": int(value.get("min_calories") or 0),
+                    "missed_on": str(value.get("missed_on") or ""),
+                }
+            except (TypeError, ValueError, KeyError):
+                continue
+        return out
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        report_console_error(f"load reminder pending meal failed: {e}", exc=e)
+        return {}
+
+
+_reminder_pending_meal: dict[int, dict[str, Any]] = _load_reminder_pending_meal()
+_reminder_pending_meal_lock = threading.Lock()
+
+
+# Пишет _reminder_pending_meal на диск (переживает рестарт).
+# Используется defer / trigger / silent-expire pending.
+def _persist_reminder_pending_meal() -> None:
+    try:
+        with _reminder_pending_meal_lock:
+            payload = {str(k): v for k, v in _reminder_pending_meal.items()}
+        _REMINDER_PENDING_MEAL_PATH.write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        report_console_error(f"persist reminder pending meal failed: {e}", exc=e)
+
+
+# Ставит reminder в очередь «на ближайший приём» после пропуска окна.
+# is_triggered_today не сбрасываем (maintenance не шлёт «пропущено» снова).
+# Используется inline «Перенести на ближайший приём».
+def defer_reminder_to_next_meal(user_id: int, reminder_id: int) -> bool:
+    row = get_reminder(user_id, reminder_id)
+    if row is None:
+        return False
+    user = get_user(user_id)
+    entry = {
+        "user_id": int(user_id),
+        "time_start": str(row.get("time_start") or ""),
+        "min_calories": int(row.get("min_calories") or 0),
+        "missed_on": logical_today(user),
+    }
+    with _reminder_pending_meal_lock:
+        _reminder_pending_meal[int(reminder_id)] = entry
+    _persist_reminder_pending_meal()
+    logger.info(
+        "reminder deferred to next meal user_id=%s id=%s missed_on=%s",
+        user_id,
+        reminder_id,
+        entry["missed_on"],
+    )
+    return True
+
+
+# Убирает reminder_id из очереди pending (после срабатывания или silent-expire).
+# Используется trigger pending и _expire_pending_meal_reminders.
+def _clear_reminder_pending_meal(reminder_id: int) -> None:
+    with _reminder_pending_meal_lock:
+        if int(reminder_id) not in _reminder_pending_meal:
+            return
+        del _reminder_pending_meal[int(reminder_id)]
+    _persist_reminder_pending_meal()
+
+
+# True, если reminder ждёт ближайший приём после пропуска.
+# Используется missed-check (пропуск повторного «пропущено»).
+def _is_reminder_pending_meal(reminder_id: int) -> bool:
+    with _reminder_pending_meal_lock:
+        return int(reminder_id) in _reminder_pending_meal
+
+
+# Срабатывание отложенных reminders на еду вне окна (правила min_calories).
+# Помечает is_triggered_today и снимает с pending. Возвращает список для notify.
+# Используется trigger_reminders_for_food.
+def _trigger_pending_meal_reminders(
+    user_id: int,
+    calories: int,
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    kcal = int(calories or 0)
+    with _reminder_pending_meal_lock:
+        pending_ids = [
+            rid
+            for rid, meta in _reminder_pending_meal.items()
+            if int(meta.get("user_id") or 0) == int(user_id)
+        ]
+    if not pending_ids:
+        return []
+    by_id = {int(r["id"]): r for r in rows}
+    triggered: list[dict[str, Any]] = []
+    mark_ids: list[int] = []
+    clear_ids: list[int] = []
+    for rid in pending_ids:
+        with _reminder_pending_meal_lock:
+            meta = _reminder_pending_meal.get(rid)
+        if meta is None:
+            continue
+        if kcal < int(meta.get("min_calories") or 0):
+            continue
+        row = by_id.get(rid)
+        if row is None or not row.get("is_active"):
+            clear_ids.append(rid)
+            continue
+        mark_ids.append(rid)
+        clear_ids.append(rid)
+        updated = dict(row)
+        updated["is_triggered_today"] = True
+        triggered.append(updated)
+        logger.info(
+            "reminder pending-meal triggered user_id=%s id=%s title=%r kcal=%s",
+            user_id,
+            rid,
+            updated.get("title"),
+            kcal,
+        )
+    if mark_ids:
+        _patch_reminders_parallel(mark_ids, {"is_triggered_today": True})
+    for rid in clear_ids:
+        _clear_reminder_pending_meal(rid)
+    return triggered
+
+
+# Снимает pending без сообщения в чат, если уже началось следующее окно
+# (логический день > missed_on и now >= time_start). Окно снова «живое».
+# Используется reminders_maintenance / check перед missed.
+def _expire_pending_meal_reminders(
+    user_id: int, *, user: dict[str, Any]
+) -> None:
+    today = logical_today(user)
+    now_hm = datetime.now(ZoneInfo(user["timezone"])).strftime("%H:%M")
+    with _reminder_pending_meal_lock:
+        expire_ids = [
+            rid
+            for rid, meta in _reminder_pending_meal.items()
+            if int(meta.get("user_id") or 0) == int(user_id)
+            and str(meta.get("missed_on") or "")
+            and today > str(meta.get("missed_on") or "")
+            and now_hm >= str(meta.get("time_start") or "")
+        ]
+    for rid in expire_ids:
+        logger.info(
+            "reminder pending-meal expired silently user_id=%s id=%s today=%s",
+            user_id,
+            rid,
+            today,
+        )
+        _clear_reminder_pending_meal(rid)
+
+
 # Фоновый upsert профиля после опроса: user_id → Task (пока читают про reminder).
 _survey_profile_saves: dict[int, asyncio.Task[None]] = {}
 # Таймер кнопки «Жду выполнения (N)» → «Готово» после опроса: user_id → Task.
@@ -995,12 +1173,15 @@ def set_reminder_active(
     )
 
 
-# Удаление напоминания.
+# Удаление напоминания (+ снятие с очереди «на ближайший приём»).
 # Используется карточкой «Мои напоминания». check_owner=False если id из FSM.
 def delete_reminder(
     user_id: int, reminder_id: int, *, check_owner: bool = True
 ) -> bool:
-    return db.delete_reminder(user_id, reminder_id, check_owner=check_owner)
+    ok = db.delete_reminder(user_id, reminder_id, check_owner=check_owner)
+    if ok:
+        _clear_reminder_pending_meal(reminder_id)
+    return ok
 
 
 # Параллельный PATCH нескольких reminders (одно поле на id).
@@ -1080,6 +1261,7 @@ def snooze_reminder(
 
 # После INSERT в food_logs: активные reminders в текущем окне времени,
 # calories >= min_calories, ещё не срабатывали сегодня → пометить и вернуть список.
+# Плюс отложенные после пропуска (pending next meal) — вне окна, по min_calories.
 # Один GET reminders + параллельные PATCH; без повторного list.
 # Используется колбэком on_food_saved из food_recognition.
 def trigger_reminders_for_food(
@@ -1098,6 +1280,8 @@ def trigger_reminders_for_food(
             continue
         if row.get("is_triggered_today"):
             continue
+        if _is_reminder_pending_meal(int(row["id"])):
+            continue
         if not (row["time_start"] <= now_hm <= row["time_end"]):
             continue
         if kcal < int(row.get("min_calories") or 0):
@@ -1114,6 +1298,7 @@ def trigger_reminders_for_food(
             kcal,
         )
     _patch_reminders_parallel(mark_ids, {"is_triggered_today": True})
+    triggered.extend(_trigger_pending_meal_reminders(user_id, kcal, rows))
     return triggered
 
 
@@ -1129,6 +1314,7 @@ def check_missed_reminders(user_id: int) -> list[dict[str, Any]]:
 
 # Ядро missed-check по уже загруженным rows (+ сброс суток).
 # user — опционально уже загруженный профиль (maintenance без GET).
+# Pending «на ближайший приём» пропускаем; при старте следующего окна — expire.
 # Используется check_missed_reminders и _collect_missed_reminder_targets.
 def _check_missed_reminders_for_rows(
     user_id: int,
@@ -1138,6 +1324,7 @@ def _check_missed_reminders_for_rows(
 ) -> list[dict[str, Any]]:
     profile = user if user is not None else get_user(user_id)
     rows = _reset_reminder_triggers_if_new_day(user_id, rows, user=profile)
+    _expire_pending_meal_reminders(user_id, user=profile)
     now_hm = datetime.now(ZoneInfo(profile["timezone"])).strftime("%H:%M")
     missed: list[dict[str, Any]] = []
     mark_ids: list[int] = []
@@ -1145,6 +1332,8 @@ def _check_missed_reminders_for_rows(
         if not row.get("is_active"):
             continue
         if row.get("is_triggered_today"):
+            continue
+        if _is_reminder_pending_meal(int(row["id"])):
             continue
         time_end = str(row.get("time_end") or "")
         if not time_end or now_hm <= time_end:
@@ -1774,17 +1963,23 @@ def kb_reminder_notify(reminder_id: int) -> InlineKeyboardMarkup:
     )
 
 
-# Inline под уведомлением о пропущенном окне напоминания (только закрыть).
+# Inline под уведомлением о пропущенном окне: перенос на ближайший приём / ок.
 # Используется reminders_maintenance_loop.
-def kb_reminder_missed_ok(reminder_id: int) -> InlineKeyboardMarkup:
+def kb_reminder_missed(reminder_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="➡️ Перенести на ближайший приём",
+                    callback_data=f"{CALLBACK_REM_DEFER_PREFIX}{reminder_id}",
+                )
+            ],
             [
                 InlineKeyboardButton(
                     text="✅ Понятно",
                     callback_data=f"{CALLBACK_REM_OK_PREFIX}{reminder_id}",
                 )
-            ]
+            ],
         ]
     )
 
@@ -2530,7 +2725,8 @@ class DropStaleMessagesMiddleware(BaseMiddleware):
 
 
 dp.message.outer_middleware(DropStaleMessagesMiddleware())
-# Колбэк после подтверждения еды: INSERT food_logs → reminders.
+# Колбэк после подтверждения еды: INSERT food_logs (до «Учтено ✅»).
+# Reminders — в _on_after_food_ack, чтобы шли после ack в чате.
 # Передаётся в food_recognition.setup_food_recognition(on_food_saved=...).
 async def _on_food_saved(
     user_id: int,
@@ -2549,7 +2745,16 @@ async def _on_food_saved(
         )
         if is_ext:
             await notify_user_tech_issues(bot=bot, chat_id=chat_id)
-        return
+
+
+# Колбэк после «Учтено ✅»: trigger/notify reminders.
+# Передаётся в setup_food_recognition(on_after_food_ack=...).
+async def _on_after_food_ack(
+    user_id: int,
+    result: Any,
+    bot: Bot,
+    chat_id: int,
+) -> None:
     calories = int(getattr(result, "calories", 0) or 0)
     await notify_reminders_after_food(user_id, calories, bot, chat_id)
 
@@ -2740,6 +2945,7 @@ dp.include_router(
         menu_button_texts=MENU_BUTTON_TEXTS,
         main_menu_button_text=BTN_MAIN_MENU,
         on_food_saved=_on_food_saved,
+        on_after_food_ack=_on_after_food_ack,
     )
 )
 #endregion
@@ -4205,6 +4411,33 @@ async def on_rem_snooze(callback: CallbackQuery, state: FSMContext) -> None:
                 pass
 
 
+# Inline: после пропуска — ждать ближайший приём (вне окна, по min_calories).
+@menu_router.callback_query(F.data.startswith(CALLBACK_REM_DEFER_PREFIX))
+async def on_rem_defer(callback: CallbackQuery, state: FSMContext) -> None:
+    raw = (callback.data or "").removeprefix(CALLBACK_REM_DEFER_PREFIX)
+    if not raw.isdigit():
+        await callback.answer()
+        return
+    user_id = callback.from_user.id
+    ok = await run_db(defer_reminder_to_next_meal, user_id, int(raw))
+    await callback.answer(
+        "Ждём ближайший приём" if ok else "Уже недоступно"
+    )
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        if ok:
+            try:
+                await callback.message.edit_text(
+                    f"{callback.message.text or ''}\n\n"
+                    "➡️ Перенесено на ближайший приём"
+                )
+            except Exception:
+                pass
+
+
 # Inline: подтвердить уведомление (кнопки убираем).
 @menu_router.callback_query(F.data.startswith(CALLBACK_REM_OK_PREFIX))
 async def on_rem_ok(callback: CallbackQuery, state: FSMContext) -> None:
@@ -4354,6 +4587,7 @@ def _collect_missed_reminder_targets() -> list[tuple[int, dict[str, Any]]]:
             if reminders_frozen(user_id, user=user):
                 # Всё равно сбрасываем сутки (флаги), но не шлём missed.
                 _reset_reminder_triggers_if_new_day(user_id, rows, user=user)
+                _expire_pending_meal_reminders(user_id, user=user)
                 continue
             missed = _check_missed_reminders_for_rows(user_id, rows, user=user)
             for row in missed:
@@ -4395,7 +4629,7 @@ async def reminders_maintenance_loop(bot: Bot) -> None:
                         user_id,
                         format_missed_reminder_text(row),
                         parse_mode="HTML",
-                        reply_markup=kb_reminder_missed_ok(int(row["id"])),
+                        reply_markup=kb_reminder_missed(int(row["id"])),
                     )
                 except Exception as e:
                     report_console_error(

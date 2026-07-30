@@ -36,6 +36,7 @@ NutriSnap_Twin_bot/
 ├── .gitignore             # в т.ч. logs/, *.log
 ├── logs/                  # bot.log (+ ротация; не в git; volume в compose)
 ├── .reminder_day_keys.json  # Локальный ключ сброса is_triggered_today (не в git; volume)
+├── .reminder_pending_meal.json  # Отложенные после пропуска «на ближайший приём» (volume)
 ├── cursorcontext_on_SkyNode.md  # SSH/VPS шпаргалка (SkyNode)
 ├── backlog.md             # Личный бэклог (не править агентом)
 └── Старое/                # Устаревшие эксперименты (не использовать как основу)
@@ -55,8 +56,9 @@ main.py
   ├── include_router(setup_initial_survey(on_complete=_on_survey_complete))
   │     └── … → usage-reminder + «🟩 Хорошо» (+ параллельный set_profile)
   │           → закрепить бота (таймер 15с → «Готово») → show_recognize
-  └── include_router(setup_food_recognition(..., on_food_saved=_on_food_saved))
-        └── persist_confirmed_food → INSERT food_logs + trigger_reminders_for_food
+  └── include_router(setup_food_recognition(..., on_food_saved=_on_food_saved,
+        │                                    on_after_food_ack=_on_after_food_ack))
+        └── persist → INSERT food_logs → «Учтено ✅» → notify reminders
 ```
 
 ## Актуальная логика
@@ -75,11 +77,12 @@ main.py
 - Дневник / выгрузка / настройки / reminders — через обёртки `get_user` (кэш), `get_food_logs_*`, `set_*` (+ invalidate), `add_reminder`, … → `db_nocodb`. Из async-хендлеров — только через `run_db(...)` (`asyncio.to_thread`), чтобы urllib NocoDB не блокировал event loop.
 - Кэш `users` в `main.py`: `_user_cache` по telegram_id; `set_*` / `set_profile` — optimistic `_patch_user_cache` / `_put_user_cache` (без лишнего GET); `invalidate_user_cache` — fallback если кэша ещё нет. Singleflight + `_user_gen` для гонок.
 - Меньше roundtrip: `trigger_reminders_for_food` — один list + параллельные PATCH; `show_settings` — user∥reminders; toggle/delete reminder и delete food_log из FSM без ownership-GET; списки reminders/food_logs в FSM на пагинации.
-- После ✅ еды: `_on_food_saved` → `insert_food_log_from_result` (emoji в `details_json` + PATCH `users.last_food_logged_on`) → `trigger_reminders_for_food`.
+- После ✅ еды: `_on_food_saved` → `insert_food_log_from_result` (emoji в `details_json` + PATCH `users.last_food_logged_on`); затем «Учтено ✅»; затем `_on_after_food_ack` → `notify_reminders_after_food` / `trigger_reminders_for_food` (чтобы reminders шли после ack в чате).
 - Дневник «✏️ Изменить блюдо»: выбор номера → свободный текст → Gemini (`analyze_food_log_edit`) → `update_food_log` + сообщение об успехе. Удаление — сразу DELETE + «✅ Блюдо удалено».
 - `_on_survey_complete`: сразу текст про usage-reminder + inline «🟩 Хорошо»; `set_profile` стартует параллельно (`_survey_profile_saves`). По кнопке — await upsert → напоминание закрепить/положить в важную папку (`SURVEY_PIN_REMINDER_TEXT`) с inline «Жду выполнения (15)»…«(1)» → «Готово» (клик во время отсчёта игнорируется) → «всё настроено» + `show_recognize`.
 - Usage-reminder: если `usage_reminder_enabled` и до 13:00 (TZ юзера) `last_food_logged_on` ≠ логический today — фоновый `usage_reminder_loop` (раз в час, старт sleep 40 с) шлёт сообщение и пишет `usage_reminder_sent_on`. Тик: только `list_users_with_usage_reminder` (без N+1 к food_logs). Вкл/выкл: Настройки → Напоминания → «📲 Напоминание использования бота».
-- Reminders maintenance (`reminders_maintenance_loop`, тик в `:05` каждого часа серверного времени — `REMINDER_MISSED_CHECK_MINUTE=5`): `list_all_reminders` + `list_all_users` (без per-user GET) → сброс `is_triggered_today` при смене логических суток; ключ даты в `.reminder_day_keys.json`. Пропущенные окна: `now > time_end`, ещё не triggered, не frozen → «⏰ Напоминание пропущено» + mark triggered.
+- Reminders maintenance (`reminders_maintenance_loop`, тик в `:05` каждого часа серверного времени — `REMINDER_MISSED_CHECK_MINUTE=5`): `list_all_reminders` + `list_all_users` (без per-user GET) → сброс `is_triggered_today` при смене логических суток; ключ даты в `.reminder_day_keys.json`. Пропущенные окна: `now > time_end`, ещё не triggered, не frozen, не в pending → «⏰ Напоминание пропущено» + mark triggered; кнопки «➡️ Перенести на ближайший приём» (`rem:defer:`) и «✅ Понятно».
+- Defer после пропуска: `defer_reminder_to_next_meal` пишет в `.reminder_pending_meal.json` (`reminder_id → user_id/time_start/min_calories/missed_on`), `is_triggered_today` не сбрасывает. `trigger_reminders_for_food` шлёт уведомление на ближайшую еду вне окна (по `min_calories`). Если до `time_start` следующего логического дня еды не было — silent expire (ничего в чат), окно снова активное.
 - Food logs retention (`food_logs_cleanup_loop`, раз в сутки / 86400 с, старт sleep 55 с): `delete_food_logs_older_than(FOOD_LOG_RETENTION_DAYS=100)` — удаляет записи с `logged_date` &lt; today_UTC−100; в лог пишет число удалённых.
 - Профиль: «🔄 Обновить данные пользователя» → `start_initial_survey`. Смена goal → пересчёт ккал через `resolve_recommended_calories` (Mifflin–St Jeor + Gemini fallback).
 - Версия бота: константа `BOT_VERSION` (`v1.0.0`) в `main.py`; Настройки → «🔩 Для разработчика» → сообщение «Версия бота: …».
@@ -144,7 +147,7 @@ main.py
 - `_generate_with_fallback`: промежуточные сбои моделей (503/504 и т.п.) — только `logger.warning`, без письма; на почту уходит, когда все попытки исчерпаны и хендлер зовёт `report_service_problem` (пустой/неразобранный ответ). Принимает `response_schema` (FoodResult / FoodLogEditResult).
 - `analyze_food_log_edit` + `parse_food_log_edit`: свободная текстовая правка записи дневника (status applied/unclear/irrelevant) → UPDATE в main.
 - Фото перед Files API: `prepare_image_for_gemini` (Pillow) — EXIF-ориентация, длинная сторона ≤1024px, JPEG q=80; вызывается из `download_photo_temp`.
-- Без изменений флоу Gemini/FSM распознавания; `persist_confirmed_food` → консоль + `on_food_saved` (запись в БД в main).
+- Без изменений флоу Gemini/FSM распознавания; `persist_confirmed_food` → консоль + `on_food_saved` (INSERT в main); после «Учтено ✅» → `notify_after_food_ack` / `on_after_food_ack` (reminders).
 - Статус анализа (`send_analysis_status`): «✨ Анализирую…» сразу с `ReplyKeyboardRemove` (без пустого stub+delete). Edit в превью обычно ок; fallback — новое сообщение.
 
 ## Переменные окружения
@@ -235,7 +238,7 @@ main.py
 ## Docker (локально Windows / VPS)
 
 - `Dockerfile`: `python:3.10-slim` (паритет с локальной 3.10.10), `CMD ["python", "main.py"]`, `PYTHONUNBUFFERED=1`.
-- `docker-compose.yml`: сервис `bot`, `env_file: .env`, volumes `./logs` и `./.reminder_day_keys.json` (файл на хосте должен существовать до первого `up`).
+- `docker-compose.yml`: сервис `bot`, `env_file: .env`, volumes `./logs`, `./.reminder_day_keys.json`, `./.reminder_pending_meal.json` (файлы на хосте должны существовать до первого `up`; `deploy.sh` создаёт пустые `{}`).
 - `docker-compose.vps.yml`: `network_mode: host` — контейнер видит mihomo `127.0.0.1:7890` и `/etc/hosts` хоста.
 - Локальный тест: `docker compose up --build` (без vps-файла). Прокси в `.env` пустой.
 - VPS: `docker compose -f docker-compose.yml -f docker-compose.vps.yml up --build -d`.
