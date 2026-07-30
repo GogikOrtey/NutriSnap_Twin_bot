@@ -88,6 +88,7 @@ main.py
 - Профиль: «🔄 Обновить данные пользователя» → `start_initial_survey`. Смена goal → пересчёт ккал через `resolve_recommended_calories` (Mifflin–St Jeor + Gemini fallback).
 - Версия бота: константа `BOT_VERSION` (`v1.0.0`) в `main.py`; Настройки → «🔩 Для разработчика» → сообщение «Версия бота: …».
 - ReplyKeyboard / Inline / логическая дата / FAQ / SMTP feedback — без изменений UX.
+- Тарифы (`💎 Тарифы` под дневником): `show_tariffs` / `show_tariff_pay` / `kb_tariffs` / `kb_tariff_pay`; бесплатный (текст «уже активирован») / премиум → оплата 99 ₽ на 30 дней + HTML-ссылки оферта/политика (плейсхолдеры telegra.ph); «Оплатить» — заглушка + возврат в тарифы (`report_console_error` при сбое); `💬 Поддержка` → `MenuFlow.support_wait` → SMTP (`kind=support`, в письме `https://t.me/user?id=…`). 🎈 ЮKassa, картинка достоинств, реальные юрдоки, премиум в NocoDB, лимит 10 распознаваний/сутки в `food_recognition.py` — ещё нет.
 - `main()`: `setup_logging` + `install_error_email_hooks` + `attach_asyncio_error_handler` + `usage_reminder_loop` + `reminders_maintenance_loop` + `food_logs_cleanup_loop` перед polling.
 
 ### `app_logging.py`

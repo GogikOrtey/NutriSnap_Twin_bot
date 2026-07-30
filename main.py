@@ -4,13 +4,14 @@ main.py — точка входа Telegram-бота NutriSnap (@nutrisnap_ultra_
 Зачем нужен файл
 ----------------
 Запуск бота (long polling), инфраструктура (Bot, Dispatcher, MemoryStorage),
-главное меню (дневник, распознать, настройки, напоминания, выгрузка) и /start.
+главное меню (дневник, тарифы, распознать, настройки, напоминания, выгрузка) и /start.
 Распознавание еды — в food_recognition.py (отдельный Router).
 Первичный опрос — в initial_survey.py; /start смотрит NocoDB users.
-Обратная связь (баг / идея) — SMTP-письмо на FEEDBACK_TO_EMAIL.
+Обратная связь (баг / идея / поддержка оплаты) — SMTP-письмо на FEEDBACK_TO_EMAIL.
 Консольные ошибки → error_notify (письмо с префиксом 🟨⬛🍎).
 Логирование → app_logging (консоль + logs/bot.log с ротацией).
 FAQ в настройках — обзор возможностей и ответы по темам (распознавание, дневник, …).
+Тарифы: UI выбора + заглушка оплаты; 🎈 ЮKassa / премиум в БД / лимит 10/сутки — позже.
 
 Как устроен файл
 ----------------
@@ -141,8 +142,19 @@ BOT_VERSION = "v1.0.0"
 BTN_MAIN_MENU = "🏠 Главное меню"
 
 BTN_DIARY = "📒 Дневник питания"
+BTN_TARIFFS = "💎 Тарифы"
+BTN_TARIFF_FREE = "🆓 Бесплатный тариф [Активно✅]"
+BTN_TARIFF_PREMIUM = "⭐️ Премиум доступ (безлимит)"
+BTN_TARIFF_PAY = "Оплатить: 99 рублей"
+BTN_TARIFF_SUPPORT = "💬 Поддержка"
 BTN_RECOGNIZE = "🔍 Распознать"
 BTN_SETTINGS = "⚙️ Настройки"
+
+# 🎈 Плейсхолдеры: заменить на реальные страницы telegra.ph (оферта / политика).
+TARIFF_OFFER_URL = "https://telegra.ph/Publichnaya-oferta-NutriClick-01-01"
+TARIFF_PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-NutriClick-01-01"
+TARIFF_PRICE_RUB = 99
+TARIFF_PREMIUM_DAYS = 30
 
 BTN_ADD_DISH = "🟩 Добавить блюдо"
 BTN_EDIT_DISH = "✏️ Изменить блюдо"
@@ -461,6 +473,11 @@ MENU_BUTTON_TEXTS: frozenset[str] = frozenset(
     {
         BTN_MAIN_MENU,
         BTN_DIARY,
+        BTN_TARIFFS,
+        BTN_TARIFF_FREE,
+        BTN_TARIFF_PREMIUM,
+        BTN_TARIFF_PAY,
+        BTN_TARIFF_SUPPORT,
         BTN_RECOGNIZE,
         BTN_SETTINGS,
         BTN_ADD_DISH,
@@ -530,6 +547,7 @@ class MenuFlow(StatesGroup):
     settings_goal = State()
     settings_goal_recalc = State()
     feedback_wait = State()
+    support_wait = State()
     export_month_pick = State()
     reminders_add_title = State()
     reminders_add_window = State()
@@ -1179,6 +1197,7 @@ def mark_usage_reminder_sent(user_id: int, sent_on: str) -> None:
 FEEDBACK_KIND_LABELS = {
     "bug": "Сообщение об ошибке",
     "idea": "Предложение по улучшению функционала",
+    "support": "Поддержка оплаты",
 }
 
 
@@ -1234,6 +1253,7 @@ async def send_feedback_email(
         f"Тип: {kind_label}\n"
         f"user_id: {user_id}\n"
         f"username: {uname}\n"
+        f"Профиль: https://t.me/user?id={user_id}\n"
         f"\n"
         f"Сообщение:\n"
         f"{text or '(без текста)'}\n"
@@ -1711,7 +1731,35 @@ def kb_main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_DIARY)],
+            [KeyboardButton(text=BTN_TARIFFS)],
             [KeyboardButton(text=BTN_RECOGNIZE), KeyboardButton(text=BTN_SETTINGS)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# Reply-клавиатура раздела «Тарифы»: бесплатный / премиум / поддержка.
+# Используется show_tariffs и возвратами с экрана оплаты / поддержки.
+def kb_tariffs() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_TARIFF_FREE)],
+            [KeyboardButton(text=BTN_TARIFF_PREMIUM)],
+            [KeyboardButton(text=BTN_TARIFF_SUPPORT)],
+            [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# Reply-клавиатура экрана оплаты премиума.
+# Используется show_tariff_pay.
+def kb_tariff_pay() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_TARIFF_PAY)],
+            [KeyboardButton(text=BTN_TARIFF_SUPPORT)],
+            [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
         ],
         resize_keyboard=True,
     )
@@ -2577,6 +2625,45 @@ async def show_feedback_menu(message: Message, state: FSMContext) -> None:
     )
 
 
+# Экран выбора тарифа (бесплатный / премиум).
+# Используется кнопкой BTN_TARIFFS, «Назад» с оплаты/поддержки и после заглушки оплаты.
+# 🎈 Позже: отправлять картинку с достоинствами подписки перед/вместе с этим текстом.
+# 🎈 Позже: метка [Активно✅] по премиум-статусу из NocoDB (сейчас всегда бесплатный).
+async def show_tariffs(message: Message, state: FSMContext) -> None:
+    await state.set_state(None)
+    await state.update_data(menu_screen="tariffs")
+    await replace_ui(
+        message,
+        state,
+        "💎 Тарифы\n"
+        "\n"
+        "Тариф бесплатный (базовый) — до 10 распознаваний еды в сутки\n"
+        "Премиум доступ — безлимитное распознавание фото на 1 месяц",
+        reply_markup=kb_tariffs(),
+    )
+
+
+# Экран оплаты премиума: цена, срок, ссылки на оферту и политику.
+# Используется кнопкой BTN_TARIFF_PREMIUM и «Назад» из ввода поддержки (если с оплаты).
+async def show_tariff_pay(message: Message, state: FSMContext) -> None:
+    await state.set_state(None)
+    await state.update_data(menu_screen="tariffs_pay")
+    await replace_ui(
+        message,
+        state,
+        "⭐️ Премиум доступ\n"
+        "\n"
+        f"Безлимитное распознавание фото на {TARIFF_PREMIUM_DAYS} дней.\n"
+        f"Стоимость: {TARIFF_PRICE_RUB} рублей.\n"
+        "\n"
+        "Нажимая «Оплатить», вы принимаете условия "
+        f'<a href="{TARIFF_OFFER_URL}">Публичной оферты</a> и '
+        f'<a href="{TARIFF_PRIVACY_URL}">Политики конфиденциальности</a>.',
+        reply_markup=kb_tariff_pay(),
+        parse_mode="HTML",
+    )
+
+
 # Экран FAQ: общий обзор возможностей + кнопки тем.
 # Используется кнопкой BTN_SET_HELP, «Обзор возможностей» и «Назад» из настроек.
 async def show_help(message: Message, state: FSMContext) -> None:
@@ -3163,6 +3250,12 @@ async def on_diary(message: Message, state: FSMContext) -> None:
     await show_diary(message, state)
 
 
+# Открыть раздел тарифов.
+@menu_router.message(F.text == BTN_TARIFFS)
+async def on_tariffs(message: Message, state: FSMContext) -> None:
+    await show_tariffs(message, state)
+
+
 # Экран-памятка «Распознать».
 @menu_router.message(F.text == BTN_RECOGNIZE)
 async def on_recognize(message: Message, state: FSMContext) -> None:
@@ -3173,6 +3266,132 @@ async def on_recognize(message: Message, state: FSMContext) -> None:
 @menu_router.message(F.text == BTN_SETTINGS)
 async def on_settings(message: Message, state: FSMContext) -> None:
     await show_settings(message, state)
+
+
+#region Хендлеры: тарифы
+# Бесплатный тариф: пока всегда активен (премиум в БД ещё нет).
+# 🎈 Позже: если премиум активен — другая подпись / сообщение.
+@menu_router.message(F.text == BTN_TARIFF_FREE)
+async def on_tariff_free(message: Message, state: FSMContext) -> None:
+    await state.set_state(None)
+    await state.update_data(menu_screen="tariffs")
+    await replace_ui(
+        message,
+        state,
+        "У вас уже активирован базовый тариф — доступно 10 распознаваний в сутки",
+        reply_markup=kb_tariffs(),
+    )
+
+
+# Переход к экрану оплаты премиума.
+@menu_router.message(F.text == BTN_TARIFF_PREMIUM)
+async def on_tariff_premium(message: Message, state: FSMContext) -> None:
+    await show_tariff_pay(message, state)
+
+
+# Заглушка оплаты: ЮKassa ещё не подключена; возврат в «Тарифы».
+# 🎈 Позже: создать платёж ЮKassa и выдать invoice / ссылку на оплату.
+@menu_router.message(F.text == BTN_TARIFF_PAY)
+async def on_tariff_pay(message: Message, state: FSMContext) -> None:
+    try:
+        await message.answer(
+            "У нас сейчас небольшие проблемы с сервисом оплаты, "
+            "пожалуйста попробуйте позднее"
+        )
+        await show_tariffs(message, state)
+    except Exception as exc:
+        report_console_error(f"tariff pay stub error: {exc}", exc=exc)
+        await message.answer(
+            "У нас сейчас небольшие проблемы с сервисом оплаты, "
+            "пожалуйста попробуйте позднее"
+        )
+        try:
+            await show_tariffs(message, state)
+        except Exception as exc2:
+            report_console_error(
+                f"tariff pay stub return error: {exc2}", exc=exc2
+            )
+
+
+# Старт ввода обращения в поддержку оплаты.
+@menu_router.message(F.text == BTN_TARIFF_SUPPORT)
+async def on_tariff_support(message: Message, state: FSMContext) -> None:
+    await state.set_state(MenuFlow.support_wait)
+    await state.update_data(menu_screen="tariffs", feedback_kind="support")
+    await replace_ui(
+        message,
+        state,
+        "💬 Поддержка\n"
+        "\n"
+        "Если у вас возникли вопросы или сложности при оплате — "
+        "напишите нам. Можно прикрепить один скриншот "
+        "(удобнее всего — фото с подписью).",
+        reply_markup=kb_nav_only(),
+    )
+
+
+# Приём текста поддержки оплаты → письмо на FEEDBACK_TO_EMAIL.
+@menu_router.message(MenuFlow.support_wait, F.text, ~F.text.in_(MENU_BUTTON_TEXTS))
+async def on_support_text(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.id if message.from_user else 0
+    username = message.from_user.username if message.from_user else None
+    text = (message.text or "").strip()
+    try:
+        await send_feedback_email(
+            user_id=user_id,
+            username=username,
+            kind="support",
+            text=text,
+        )
+    except Exception as exc:
+        report_console_error(f"support email error: {exc}", exc=exc)
+        await message.answer(
+            "Не удалось отправить сообщение. Попробуйте позже "
+            "или напишите разработчику напрямую"
+        )
+        return
+    await state.set_state(None)
+    await state.update_data(menu_screen="tariffs", feedback_kind=None)
+    await replace_ui(
+        message,
+        state,
+        "✅ Спасибо! Сообщение отправлено в поддержку",
+        reply_markup=kb_tariffs(),
+    )
+
+
+# Приём скриншота в поддержку оплаты → письмо с вложением.
+@menu_router.message(MenuFlow.support_wait, F.photo)
+async def on_support_photo(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.id if message.from_user else 0
+    username = message.from_user.username if message.from_user else None
+    text = (message.caption or "").strip()
+    photo = message.photo[-1]
+    try:
+        photo_bytes = await download_photo_bytes(message.bot, photo.file_id)
+        await send_feedback_email(
+            user_id=user_id,
+            username=username,
+            kind="support",
+            text=text,
+            photo_bytes=photo_bytes,
+        )
+    except Exception as exc:
+        report_console_error(f"support email error: {exc}", exc=exc)
+        await message.answer(
+            "Не удалось отправить сообщение. Попробуйте позже "
+            "или напишите разработчику напрямую"
+        )
+        return
+    await state.set_state(None)
+    await state.update_data(menu_screen="tariffs", feedback_kind=None)
+    await replace_ui(
+        message,
+        state,
+        "✅ Спасибо! Сообщение отправлено в поддержку",
+        reply_markup=kb_tariffs(),
+    )
+#endregion
 
 
 # «Назад»: из подменю — на уровень выше; из корня разделов — в главное меню.
@@ -3236,6 +3455,9 @@ async def on_back(message: Message, state: FSMContext) -> None:
         return
     if current == MenuFlow.feedback_wait.state:
         await show_feedback_menu(message, state)
+        return
+    if current == MenuFlow.support_wait.state:
+        await show_tariffs(message, state)
         return
     if current == MenuFlow.reminders_add_window.state:
         await state.set_state(MenuFlow.reminders_add_title)
@@ -3314,6 +3536,12 @@ async def on_back(message: Message, state: FSMContext) -> None:
         return
     if screen == "feedback":
         await show_settings(message, state)
+        return
+    if screen == "tariffs_pay":
+        await show_tariffs(message, state)
+        return
+    if screen == "tariffs":
+        await show_main_menu(message, state)
         return
     if screen == "help":
         await show_settings(message, state)
