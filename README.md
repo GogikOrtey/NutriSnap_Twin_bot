@@ -129,7 +129,7 @@ python requests_DB_test.py
 | Цикл | Интервал | Что делает |
 |------|----------|------------|
 | Usage reminder | ~1 ч | Напоминание, если до 13:00 нет еды за день |
-| Reminders maintenance | ~1 ч | Сброс `is_triggered_today`, пропущенные окна |
+| Reminders maintenance | каждый час в :05 | Сброс `is_triggered_today`, пропущенные окна |
 | Food logs cleanup | ~1 сут | Удаление записей старше 100 дней |
 
 ## Разработка

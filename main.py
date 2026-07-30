@@ -421,9 +421,9 @@ REMINDER_WINDOWS: dict[str, tuple[str, str]] = {
 REMINDER_HEARTY_MIN_KCAL = 250
 # Заморозка уведомлений, если пользователь не заходил N дней (users.last_active_at).
 REMINDER_FREEZE_AFTER_DAYS = 3
-# Фоновый тик раз в час: сброс is_triggered_today + «окно пропущено»
-# (разные TZ пользователей — почасовой шаг проще точечных окон).
-REMINDER_MAINTENANCE_INTERVAL_SEC = 3600
+# Минута каждого часа (серверное время), когда проверяем пропущенные окна
+# и сбрасываем is_triggered_today. Окна кончаются на :00 → тик в :05.
+REMINDER_MISSED_CHECK_MINUTE = 5
 # Суточная очистка food_logs старше FOOD_LOG_RETENTION_DAYS (по logged_date).
 FOOD_LOGS_CLEANUP_INTERVAL_SEC = 86400
 # Файл с последней логической датой сброса флагов (переживает рестарт процесса).
@@ -4285,8 +4285,8 @@ def _collect_usage_reminder_targets() -> list[tuple[int, str]]:
 
 
 # Фоновый цикл раз в час: ищет пользователей без еды после 13:00 и пишет им.
-# Старт sleep(40) — оффсет от reminders_maintenance_loop (sleep 25), чтобы
-# два тяжёлых тика NocoDB не бились в одну секунду после рестарта.
+# Старт sleep(40) — оффсет от food_logs_cleanup (55) и от :05-тика
+# reminders_maintenance, чтобы тяжёлые тики NocoDB не бились вместе.
 # Используется main() рядом с polling.
 async def usage_reminder_loop(bot: Bot) -> None:
     await asyncio.sleep(40)
@@ -4368,12 +4368,25 @@ def _collect_missed_reminder_targets() -> list[tuple[int, dict[str, Any]]]:
     return targets
 
 
-# Фоновый цикл раз в час: сброс is_triggered_today + «окно пропущено»
-# (учёт разных TZ без привязки к минутам окончания окон).
+# Секунды до ближайшей минуты `minute` каждого часа (серверные часы).
+# Используется reminders_maintenance_loop (тик на :05).
+def _seconds_until_hourly_minute(minute: int) -> float:
+    now = datetime.now()
+    target = now.replace(minute=minute, second=0, microsecond=0)
+    if now >= target:
+        target += timedelta(hours=1)
+    return max(0.0, (target - now).total_seconds())
+
+
+# Фоновый цикл: сброс is_triggered_today + «окно пропущено».
+# Тик ровно в REMINDER_MISSED_CHECK_MINUTE (:05) каждого часа —
+# после окончания окон на :00 (11:00 / 16:00 / 22:00).
 # Используется main() рядом с polling.
 async def reminders_maintenance_loop(bot: Bot) -> None:
-    await asyncio.sleep(25)
     while True:
+        await asyncio.sleep(
+            _seconds_until_hourly_minute(REMINDER_MISSED_CHECK_MINUTE)
+        )
         try:
             targets = await asyncio.to_thread(_collect_missed_reminder_targets)
             for user_id, row in targets:
@@ -4395,13 +4408,12 @@ async def reminders_maintenance_loop(bot: Bot) -> None:
                 f"reminders_maintenance_loop tick failed: {e}",
                 exc=e,
             )
-        await asyncio.sleep(REMINDER_MAINTENANCE_INTERVAL_SEC)
 #endregion
 
 #region Food logs retention (старше 100 дней)
 # Фоновый цикл раз в сутки: удаляет food_logs с logged_date старше
-# FOOD_LOG_RETENTION_DAYS. Старт sleep(55) — оффсет от usage (40) и
-# reminders_maintenance (25), чтобы три тика NocoDB не бились после рестарта.
+# FOOD_LOG_RETENTION_DAYS. Старт sleep(55) — оффсет от usage (40),
+# чтобы тики NocoDB не бились после рестарта.
 # Используется main() рядом с polling.
 async def food_logs_cleanup_loop() -> None:
     await asyncio.sleep(55)
