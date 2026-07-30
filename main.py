@@ -249,7 +249,7 @@ SURVEY_USAGE_REMINDER_TEXT = (
 )
 # После «🟩 Хорошо»: закрепить/положить бота в важную папку (кнопка с таймером).
 SURVEY_PIN_REMINDER_TEXT = (
-    "Добавьте бот в папку с важными чатами, или закрепите его сверху — "
+    "⭐️ Для завершения настройки и удобного использования добавьте бот в папку с важными чатами, или закрепите его сверху — "
     "чтобы он не потерялся"
 )
 SURVEY_SETUP_DONE_TEXT = (
@@ -2044,7 +2044,7 @@ def kb_survey_usage_ok() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🟩 Хорошо",
+                    text="Хорошо",
                     callback_data=CALLBACK_SURVEY_USAGE_OK,
                 )
             ]
@@ -2056,7 +2056,7 @@ def kb_survey_usage_ok() -> InlineKeyboardMarkup:
 # Используется _show_survey_pin_reminder и таймером _run_survey_pin_countdown.
 def kb_survey_pin(*, ready: bool = False, seconds: int = SURVEY_PIN_COUNTDOWN_SEC) -> InlineKeyboardMarkup:
     if ready:
-        text = "Готово"
+        text = "✅ Готово"
         data = CALLBACK_SURVEY_PIN_DONE
     else:
         text = f"Жду выполнения ({seconds})"
