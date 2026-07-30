@@ -27,7 +27,8 @@ food_recognition.py — FSM-флоу распознавания еды для Nu
 9. Хендлеры: фото, подсказка, вес, текст, callbacks, меню правок.
 10. setup_food_recognition — MemoryStorage + тексты меню / «🏠» + on_food_saved; возвращает router.
     Reply «🏠» скрыта с отправки фото/текста до ✅ или отмены после «✏️ Изменить».
-    После ✅/авто-✅ вызывается on_food_saved (в main — INSERT food_logs + reminders).
+    После ✅/авто-✅: on_food_saved (INSERT) → «Учтено ✅» → on_after_food_ack
+    (reminders).
     Фото перед Files API: resize ≤1024px + JPEG q=80.
 """
 
@@ -112,6 +113,7 @@ CALLBACK_WEIGHT = "food:weight"
 CALLBACK_CANCEL = "food:cancel"
 
 # Тексты кнопок reply-клавиатуры меню «✏️ Изменить».
+BTN_EDIT_CONFIRM = "✅ Всё верно, добавить так"
 BTN_EDIT_WEIGHT = "✏️ Изменить вес порции"
 BTN_EDIT_HINT = "➕ Дополнить или уточнить описание блюда"
 BTN_EDIT_REPLACE = "🔄 Заменить описание или фото"
@@ -200,10 +202,13 @@ _menu_button_texts: frozenset[str] = frozenset()
 # Текст «🏠 Главное меню» из main.py — скрываем на время анализа/confirm, показываем в «✏️ Изменить».
 _main_menu_button_text: str | None = None
 
-# Колбэк после подтверждения еды (main.py → триггер reminders). Сигнатура:
+# Колбэк после подтверждения еды (main.py → INSERT food_logs). Сигнатура:
 # async (user_id, FoodResult, bot, chat_id) -> None
+# Reminders — отдельно в on_after_food_ack (после «Учтено ✅»).
 OnFoodSavedCallback = Callable[[int, "FoodResult", Bot, int], Awaitable[None]]
 _on_food_saved: OnFoodSavedCallback | None = None
+# Колбэк после сообщения «Учтено ✅» (main.py → notify reminders).
+_on_after_food_ack: OnFoodSavedCallback | None = None
 
 
 # Фильтр: текст сообщения не является кнопкой главного меню (проверка на runtime).
@@ -545,9 +550,11 @@ def build_main_menu_only_keyboard() -> ReplyKeyboardMarkup | ReplyKeyboardRemove
 
 
 # Reply-клавиатура меню правок после нажатия «✏️ Изменить» (+ «🏠 Главное меню»).
+# Сверху — «✅ Всё верно…» на случай случайного входа в правки.
 # Используется в on_edit → FoodFlow.editing_choice.
 def build_edit_menu_keyboard() -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = [
+        [KeyboardButton(text=BTN_EDIT_CONFIRM)],
         [KeyboardButton(text=BTN_EDIT_WEIGHT)],
         [KeyboardButton(text=BTN_EDIT_HINT)],
         [KeyboardButton(text=BTN_EDIT_REPLACE)],
@@ -602,7 +609,8 @@ def save_to_console(result: FoodResult) -> None:
 
 
 # «Сохраняет» подтверждённый результат (консоль) и вызывает on_food_saved
-# (в main — INSERT food_logs + триггер reminders).
+# (в main — INSERT food_logs). Reminders — после «Учтено ✅» через
+# notify_after_food_ack.
 # Используется при ✅ / автотаймауте / после пересчёта веса этикетки.
 async def persist_confirmed_food(
     result: FoodResult,
@@ -614,6 +622,19 @@ async def persist_confirmed_food(
     save_to_console(result)
     if _on_food_saved is not None:
         await _on_food_saved(user_id, result, bot, chat_id)
+
+
+# Колбэк после «Учтено ✅» (в main — trigger/notify reminders).
+# Используется сразу после send/answer «Учтено» во всех ветках confirm.
+async def notify_after_food_ack(
+    result: FoodResult,
+    *,
+    user_id: int,
+    bot: Bot,
+    chat_id: int,
+) -> None:
+    if _on_after_food_ack is not None:
+        await _on_after_food_ack(user_id, result, bot, chat_id)
 
 
 # Сжимает фото для Gemini: длинная сторона ≤1024px, JPEG q=80.
@@ -759,6 +780,9 @@ async def schedule_auto_confirm(
     await bot.send_message(
         chat_id, "Учтено ✅", reply_markup=build_main_menu_only_keyboard()
     )
+    await notify_after_food_ack(
+        result, user_id=user_id, bot=bot, chat_id=chat_id
+    )
 
 
 # Показывает превью КБЖУ, ставит FSM confirming и запускает таймер 10с.
@@ -886,6 +910,7 @@ async def handle_ai_result(
 # Обработчик фото: анализ через Gemini, ветки status, confirm UI.
 # StateFilter как у текста — не сбрасывать FSM опроса / других состояний.
 # Регистрируется на router через декоратор.
+# 🎈 Позже: лимит 10 распознаваний/сутки для бесплатного тарифа (премиум — безлимит).
 @router.message(StateFilter(None, FoodFlow.confirming), F.photo)
 async def on_photo(message: Message, state: FSMContext, bot: Bot) -> None:
     await state.clear()
@@ -1059,14 +1084,18 @@ async def on_weight_text(message: Message, state: FSMContext) -> None:
     base = FoodResult.model_validate(result_data)
     updated = recalc_by_weight(base, weight)
     user_id = message.from_user.id if message.from_user else 0
+    chat_id = message.chat.id
     await persist_confirmed_food(
-        updated, user_id=user_id, bot=message.bot, chat_id=message.chat.id
+        updated, user_id=user_id, bot=message.bot, chat_id=chat_id
     )
     await state.clear()
     await message.answer(
         f"{format_food_result(updated)}\n\nУчтено ✅ (с пересчётом на {weight:g} г)",
         parse_mode="HTML",
         reply_markup=build_main_menu_only_keyboard(),
+    )
+    await notify_after_food_ack(
+        updated, user_id=user_id, bot=message.bot, chat_id=chat_id
     )
 #endregion
 
@@ -1165,16 +1194,23 @@ async def on_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     # Инвалидируем таймер.
     await state.update_data(confirm_token=None)
     result = FoodResult.model_validate(result_data)
+    user_id = callback.from_user.id
+    chat_id = (
+        callback.message.chat.id if callback.message else callback.from_user.id
+    )
     await persist_confirmed_food(
         result,
-        user_id=callback.from_user.id,
+        user_id=user_id,
         bot=callback.bot,
-        chat_id=callback.message.chat.id if callback.message else callback.from_user.id,
+        chat_id=chat_id,
     )
     await state.clear()
     await finalize_confirmed_preview(result, message=callback.message)
     await callback.message.answer(
         "Учтено ✅", reply_markup=build_main_menu_only_keyboard()
+    )
+    await notify_after_food_ack(
+        result, user_id=user_id, bot=callback.bot, chat_id=chat_id
     )
 
 
@@ -1199,13 +1235,49 @@ async def on_edit(callback: CallbackQuery, state: FSMContext) -> None:
     except Exception:
         pass
     await callback.message.answer(
-        "Что поправить в результате?\n"
-        "Выберите действие на клавиатуре ниже:",
+        "Что поправить в результате?",
         reply_markup=build_edit_menu_keyboard(),
     )
 
 
 #region Меню правок (reply-кнопки)
+# Пункт «✅ Всё верно, добавить так»: сохранить результат без правок
+# (выход, если случайно нажали «✏️ Изменить»). Состояние editing_choice.
+@router.message(FoodFlow.editing_choice, F.text == BTN_EDIT_CONFIRM)
+async def on_edit_confirm(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    result_data = data.get("result")
+    if not result_data:
+        await message.answer(
+            "Нечего подтверждать. Пришлите фото или текст заново",
+            reply_markup=build_main_menu_only_keyboard(),
+        )
+        await state.clear()
+        return
+
+    result = FoodResult.model_validate(result_data)
+    user_id = message.from_user.id if message.from_user else message.chat.id
+    chat_id = message.chat.id
+    preview_message_id = data.get("preview_message_id")
+    await persist_confirmed_food(
+        result, user_id=user_id, bot=message.bot, chat_id=chat_id
+    )
+    await state.clear()
+    if preview_message_id is not None:
+        await finalize_confirmed_preview(
+            result,
+            bot=message.bot,
+            chat_id=chat_id,
+            message_id=preview_message_id,
+        )
+    await message.answer(
+        "Учтено ✅", reply_markup=build_main_menu_only_keyboard()
+    )
+    await notify_after_food_ack(
+        result, user_id=user_id, bot=message.bot, chat_id=chat_id
+    )
+
+
 # Пункт «✏️ Изменить вес порции»: переход к вводу граммов и пересчёту КБЖУ.
 # Используется в состоянии FoodFlow.editing_choice.
 @router.message(FoodFlow.editing_choice, F.text == BTN_EDIT_WEIGHT)
@@ -1321,19 +1393,22 @@ async def on_cancel(callback: CallbackQuery, state: FSMContext) -> None:
 #endregion
 
 #region Setup
-# Подключает MemoryStorage, тексты меню / «🏠» и колбэк после сохранения еды; возвращает router.
-# Используется в main.py: setup_food_recognition(storage, menu_button_texts=...,
-#   main_menu_button_text=..., on_food_saved=...).
+# Подключает MemoryStorage, тексты меню / «🏠» и колбэки после сохранения еды;
+# возвращает router. on_food_saved — INSERT; on_after_food_ack — после «Учтено»
+# (reminders). Используется в main.py.
 def setup_food_recognition(
     storage: MemoryStorage,
     menu_button_texts: frozenset[str] | None = None,
     main_menu_button_text: str | None = None,
     on_food_saved: OnFoodSavedCallback | None = None,
+    on_after_food_ack: OnFoodSavedCallback | None = None,
 ) -> Router:
-    global _storage, _menu_button_texts, _main_menu_button_text, _on_food_saved
+    global _storage, _menu_button_texts, _main_menu_button_text
+    global _on_food_saved, _on_after_food_ack
     _storage = storage
     _menu_button_texts = menu_button_texts or frozenset()
     _main_menu_button_text = main_menu_button_text
     _on_food_saved = on_food_saved
+    _on_after_food_ack = on_after_food_ack
     return router
 #endregion

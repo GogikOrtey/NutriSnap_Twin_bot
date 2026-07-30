@@ -4,22 +4,25 @@ main.py — точка входа Telegram-бота NutriSnap (@nutrisnap_ultra_
 Зачем нужен файл
 ----------------
 Запуск бота (long polling), инфраструктура (Bot, Dispatcher, MemoryStorage),
-главное меню (дневник, распознать, настройки, напоминания, выгрузка) и /start.
+главное меню (дневник, тарифы, распознать, настройки, напоминания, выгрузка) и /start.
 Распознавание еды — в food_recognition.py (отдельный Router).
 Первичный опрос — в initial_survey.py; /start смотрит NocoDB users.
-Обратная связь (баг / идея) — SMTP-письмо на FEEDBACK_TO_EMAIL.
+Обратная связь (баг / идея / поддержка оплаты) — SMTP-письмо на FEEDBACK_TO_EMAIL.
 Консольные ошибки → error_notify (письмо с префиксом 🟨⬛🍎).
 Логирование → app_logging (консоль + logs/bot.log с ротацией).
 FAQ в настройках — обзор возможностей и ответы по темам (распознавание, дневник, …).
+Тарифы: UI выбора + заглушка оплаты; 🎈 ЮKassa / премиум в БД / лимит 10/сутки — позже.
 
 Как устроен файл
 ----------------
 1. Импорты, .env, константы кнопок, MenuFlow.
 2. Хранилище NocoDB (db_nocodb): users (кэш по telegram_id + singleflight) /
-   food_logs / reminders. Sync-HTTP из async — через run_db (asyncio.to_thread).
+   food_logs (кэш по user_id+logged_date) / reminders. Sync-HTTP из async —
+   через run_db (asyncio.to_thread).
 3. SMTP обратной связи (send_feedback_email) + форматтеры / Reply-клавиатуры.
 4. UI-хелперы: Reply → новое сообщение; Inline дневника → edit; чистка «Выберите действие:».
-5. Router меню + хендлеры; /start → опрос или меню по БД; on_food_saved → food_logs + reminders.
+5. Router меню + хендлеры; /start → опрос или меню по БД;
+   on_food_saved → food_logs; on_after_food_ack → reminders (после «Учтено»).
 6. UserNotRegisteredError → error-handler → та же ветка, что /start;
    сбои БД/Gemini/сети → TECH_ISSUES_USER_TEXT + письмо 🟧🍎;
    прочие необработанные update-ошибки → report_console_error (🟨⬛🍎).
@@ -139,8 +142,19 @@ BOT_VERSION = "v1.0.0"
 BTN_MAIN_MENU = "🏠 Главное меню"
 
 BTN_DIARY = "📒 Дневник питания"
+BTN_TARIFFS = "💎 Тарифы"
+BTN_TARIFF_FREE = "🆓 Бесплатный тариф [Активно✅]"
+BTN_TARIFF_PREMIUM = "⭐️ Премиум доступ (безлимит)"
+BTN_TARIFF_PAY = "Оплатить: 99 рублей"
+BTN_TARIFF_SUPPORT = "💬 Поддержка"
 BTN_RECOGNIZE = "🔍 Распознать"
 BTN_SETTINGS = "⚙️ Настройки"
+
+# 🎈 Плейсхолдеры: заменить на реальные страницы telegra.ph (оферта / политика).
+TARIFF_OFFER_URL = "https://telegra.ph/Publichnaya-oferta-NutriClick-01-01"
+TARIFF_PRIVACY_URL = "https://telegra.ph/Politika-konfidencialnosti-NutriClick-01-01"
+TARIFF_PRICE_RUB = 99
+TARIFF_PREMIUM_DAYS = 30
 
 BTN_ADD_DISH = "🟩 Добавить блюдо"
 BTN_EDIT_DISH = "✏️ Изменить блюдо"
@@ -206,6 +220,8 @@ BTN_GOAL_MAINTAIN = "⚖️ Просто отслеживание"
 CALLBACK_DIARY_PREV = "diary:prev"
 CALLBACK_DIARY_NEXT = "diary:next"
 CALLBACK_REM_SNOOZE_PREFIX = "rem:snooze:"
+# Inline под «напоминание пропущено»: ждать ближайший приём (вне окна).
+CALLBACK_REM_DEFER_PREFIX = "rem:defer:"
 CALLBACK_REM_OK_PREFIX = "rem:ok:"
 # Inline под главной карточкой после 15 мин бездействия на главном экране.
 CALLBACK_MAIN_REFRESH = "main:refresh"
@@ -233,7 +249,7 @@ SURVEY_USAGE_REMINDER_TEXT = (
 )
 # После «🟩 Хорошо»: закрепить/положить бота в важную папку (кнопка с таймером).
 SURVEY_PIN_REMINDER_TEXT = (
-    "Добавьте бот в папку с важными чатами, или закрепите его сверху — "
+    "⭐️ Для завершения настройки и удобного использования добавьте бот в папку с важными чатами, или закрепите его сверху — "
     "чтобы он не потерялся"
 )
 SURVEY_SETUP_DONE_TEXT = (
@@ -421,13 +437,17 @@ REMINDER_WINDOWS: dict[str, tuple[str, str]] = {
 REMINDER_HEARTY_MIN_KCAL = 250
 # Заморозка уведомлений, если пользователь не заходил N дней (users.last_active_at).
 REMINDER_FREEZE_AFTER_DAYS = 3
-# Фоновый тик раз в час: сброс is_triggered_today + «окно пропущено»
-# (разные TZ пользователей — почасовой шаг проще точечных окон).
-REMINDER_MAINTENANCE_INTERVAL_SEC = 3600
+# Минута каждого часа (серверное время), когда проверяем пропущенные окна
+# и сбрасываем is_triggered_today. Окна кончаются на :00 → тик в :05.
+REMINDER_MISSED_CHECK_MINUTE = 5
 # Суточная очистка food_logs старше FOOD_LOG_RETENTION_DAYS (по logged_date).
 FOOD_LOGS_CLEANUP_INTERVAL_SEC = 86400
 # Файл с последней логической датой сброса флагов (переживает рестарт процесса).
 _REMINDER_DAY_KEYS_PATH = Path(__file__).resolve().parent / ".reminder_day_keys.json"
+# Отложенные после пропуска: ждать ближайший приём (переживает рестарт).
+_REMINDER_PENDING_MEAL_PATH = (
+    Path(__file__).resolve().parent / ".reminder_pending_meal.json"
+)
 
 GOAL_LABELS = {
     "weight_loss": "Похудение",
@@ -453,6 +473,11 @@ MENU_BUTTON_TEXTS: frozenset[str] = frozenset(
     {
         BTN_MAIN_MENU,
         BTN_DIARY,
+        BTN_TARIFFS,
+        BTN_TARIFF_FREE,
+        BTN_TARIFF_PREMIUM,
+        BTN_TARIFF_PAY,
+        BTN_TARIFF_SUPPORT,
         BTN_RECOGNIZE,
         BTN_SETTINGS,
         BTN_ADD_DISH,
@@ -522,6 +547,7 @@ class MenuFlow(StatesGroup):
     settings_goal = State()
     settings_goal_recalc = State()
     feedback_wait = State()
+    support_wait = State()
     export_month_pick = State()
     reminders_add_title = State()
     reminders_add_window = State()
@@ -570,6 +596,177 @@ def _persist_reminder_day_reset() -> None:
         )
     except Exception as e:
         report_console_error(f"persist reminder day keys failed: {e}", exc=e)
+
+
+# Загрузка отложенных после пропуска reminders (ждать ближайший приём).
+# Используется при старте модуля; ключ — reminder_id.
+def _load_reminder_pending_meal() -> dict[int, dict[str, Any]]:
+    try:
+        raw = _REMINDER_PENDING_MEAL_PATH.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        out: dict[int, dict[str, Any]] = {}
+        for key, value in data.items():
+            if not isinstance(value, dict):
+                continue
+            try:
+                rid = int(key)
+                out[rid] = {
+                    "user_id": int(value["user_id"]),
+                    "time_start": str(value.get("time_start") or ""),
+                    "min_calories": int(value.get("min_calories") or 0),
+                    "missed_on": str(value.get("missed_on") or ""),
+                }
+            except (TypeError, ValueError, KeyError):
+                continue
+        return out
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        report_console_error(f"load reminder pending meal failed: {e}", exc=e)
+        return {}
+
+
+_reminder_pending_meal: dict[int, dict[str, Any]] = _load_reminder_pending_meal()
+_reminder_pending_meal_lock = threading.Lock()
+
+
+# Пишет _reminder_pending_meal на диск (переживает рестарт).
+# Используется defer / trigger / silent-expire pending.
+def _persist_reminder_pending_meal() -> None:
+    try:
+        with _reminder_pending_meal_lock:
+            payload = {str(k): v for k, v in _reminder_pending_meal.items()}
+        _REMINDER_PENDING_MEAL_PATH.write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        report_console_error(f"persist reminder pending meal failed: {e}", exc=e)
+
+
+# Ставит reminder в очередь «на ближайший приём» после пропуска окна.
+# is_triggered_today не сбрасываем (maintenance не шлёт «пропущено» снова).
+# Используется inline «Перенести на ближайший приём».
+def defer_reminder_to_next_meal(user_id: int, reminder_id: int) -> bool:
+    row = get_reminder(user_id, reminder_id)
+    if row is None:
+        return False
+    user = get_user(user_id)
+    entry = {
+        "user_id": int(user_id),
+        "time_start": str(row.get("time_start") or ""),
+        "min_calories": int(row.get("min_calories") or 0),
+        "missed_on": logical_today(user),
+    }
+    with _reminder_pending_meal_lock:
+        _reminder_pending_meal[int(reminder_id)] = entry
+    _persist_reminder_pending_meal()
+    logger.info(
+        "reminder deferred to next meal user_id=%s id=%s missed_on=%s",
+        user_id,
+        reminder_id,
+        entry["missed_on"],
+    )
+    return True
+
+
+# Убирает reminder_id из очереди pending (после срабатывания или silent-expire).
+# Используется trigger pending и _expire_pending_meal_reminders.
+def _clear_reminder_pending_meal(reminder_id: int) -> None:
+    with _reminder_pending_meal_lock:
+        if int(reminder_id) not in _reminder_pending_meal:
+            return
+        del _reminder_pending_meal[int(reminder_id)]
+    _persist_reminder_pending_meal()
+
+
+# True, если reminder ждёт ближайший приём после пропуска.
+# Используется missed-check (пропуск повторного «пропущено»).
+def _is_reminder_pending_meal(reminder_id: int) -> bool:
+    with _reminder_pending_meal_lock:
+        return int(reminder_id) in _reminder_pending_meal
+
+
+# Срабатывание отложенных reminders на еду вне окна (правила min_calories).
+# Помечает is_triggered_today и снимает с pending. Возвращает список для notify.
+# Используется trigger_reminders_for_food.
+def _trigger_pending_meal_reminders(
+    user_id: int,
+    calories: int,
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    kcal = int(calories or 0)
+    with _reminder_pending_meal_lock:
+        pending_ids = [
+            rid
+            for rid, meta in _reminder_pending_meal.items()
+            if int(meta.get("user_id") or 0) == int(user_id)
+        ]
+    if not pending_ids:
+        return []
+    by_id = {int(r["id"]): r for r in rows}
+    triggered: list[dict[str, Any]] = []
+    mark_ids: list[int] = []
+    clear_ids: list[int] = []
+    for rid in pending_ids:
+        with _reminder_pending_meal_lock:
+            meta = _reminder_pending_meal.get(rid)
+        if meta is None:
+            continue
+        if kcal < int(meta.get("min_calories") or 0):
+            continue
+        row = by_id.get(rid)
+        if row is None or not row.get("is_active"):
+            clear_ids.append(rid)
+            continue
+        mark_ids.append(rid)
+        clear_ids.append(rid)
+        updated = dict(row)
+        updated["is_triggered_today"] = True
+        triggered.append(updated)
+        logger.info(
+            "reminder pending-meal triggered user_id=%s id=%s title=%r kcal=%s",
+            user_id,
+            rid,
+            updated.get("title"),
+            kcal,
+        )
+    if mark_ids:
+        _patch_reminders_parallel(mark_ids, {"is_triggered_today": True})
+    for rid in clear_ids:
+        _clear_reminder_pending_meal(rid)
+    return triggered
+
+
+# Снимает pending без сообщения в чат, если уже началось следующее окно
+# (логический день > missed_on и now >= time_start). Окно снова «живое».
+# Используется reminders_maintenance / check перед missed.
+def _expire_pending_meal_reminders(
+    user_id: int, *, user: dict[str, Any]
+) -> None:
+    today = logical_today(user)
+    now_hm = datetime.now(ZoneInfo(user["timezone"])).strftime("%H:%M")
+    with _reminder_pending_meal_lock:
+        expire_ids = [
+            rid
+            for rid, meta in _reminder_pending_meal.items()
+            if int(meta.get("user_id") or 0) == int(user_id)
+            and str(meta.get("missed_on") or "")
+            and today > str(meta.get("missed_on") or "")
+            and now_hm >= str(meta.get("time_start") or "")
+        ]
+    for rid in expire_ids:
+        logger.info(
+            "reminder pending-meal expired silently user_id=%s id=%s today=%s",
+            user_id,
+            rid,
+            today,
+        )
+        _clear_reminder_pending_meal(rid)
+
+
 # Фоновый upsert профиля после опроса: user_id → Task (пока читают про reminder).
 _survey_profile_saves: dict[int, asyncio.Task[None]] = {}
 # Таймер кнопки «Жду выполнения (N)» → «Готово» после опроса: user_id → Task.
@@ -587,6 +784,12 @@ _user_gen: dict[int, int] = {}
 _user_inflight: dict[int, Future[dict[str, Any] | None]] = {}
 _user_inflight_gen: dict[int, int] = {}
 _user_cache_lock = threading.Lock()
+
+# Кэш food_logs за день: (telegram_id, YYYY-MM-DD) → список записей (process-local).
+# Меню/дневник читают отсюда; мутации патчат или сбрасывают ключ.
+_FOOD_LOGS_CACHE_MAX_DATES = 7
+_food_logs_cache: dict[tuple[int, str], list[dict[str, Any]]] = {}
+_food_logs_cache_lock = threading.Lock()
 
 _T = TypeVar("_T")
 
@@ -720,10 +923,117 @@ def touch_user_activity(user_id: int) -> None:
     _patch_user_cache(user_id, {"last_active_at": now})
 
 
-# Записи дневника за логическую дату YYYY-MM-DD.
-# Используется главным меню, дневником, удалением и выгрузкой.
-def get_food_logs_for_date(user_id: int, logged_date: str) -> list[dict[str, Any]]:
-    return db.get_food_logs_for_date(user_id, logged_date)
+# Копия одной записи food_logs (details_json — отдельный dict).
+# Используется кэшем, чтобы хендлеры/FSM не портили общий список.
+def _clone_food_log_row(row: dict[str, Any]) -> dict[str, Any]:
+    out = dict(row)
+    details = out.get("details_json")
+    if isinstance(details, dict):
+        out["details_json"] = dict(details)
+    return out
+
+
+# Копия списка food_logs для возврата наружу или записи в кэш.
+# Используется get_food_logs_for_date и _put_food_logs_cache.
+def _clone_food_logs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_clone_food_log_row(r) for r in rows]
+
+
+# Оставляет не больше _FOOD_LOGS_CACHE_MAX_DATES дат на user_id (старые YYYY-MM-DD).
+# Используется _put_food_logs_cache (вызывать под _food_logs_cache_lock).
+def _trim_food_logs_cache_locked(user_id: int) -> None:
+    dates = sorted(d for (uid, d) in _food_logs_cache if uid == user_id)
+    while len(dates) > _FOOD_LOGS_CACHE_MAX_DATES:
+        _food_logs_cache.pop((user_id, dates.pop(0)), None)
+
+
+# Кладёт список записей за дату в кэш (копия).
+# Используется get_food_logs_for_date после GET и optimistic-патчами.
+def _put_food_logs_cache(
+    user_id: int, logged_date: str, rows: list[dict[str, Any]]
+) -> None:
+    if not user_id or not logged_date:
+        return
+    key = (int(user_id), str(logged_date))
+    with _food_logs_cache_lock:
+        _food_logs_cache[key] = _clone_food_logs(rows)
+        _trim_food_logs_cache_locked(int(user_id))
+
+
+# Сбрасывает кэш food_logs: одну дату или все даты пользователя.
+# Используется при смене TZ/day_change_hour и как fallback мутаций.
+def invalidate_food_logs_cache(
+    user_id: int, logged_date: str | None = None
+) -> None:
+    if not user_id:
+        return
+    uid = int(user_id)
+    with _food_logs_cache_lock:
+        if logged_date is not None:
+            _food_logs_cache.pop((uid, str(logged_date)), None)
+            return
+        for key in [k for k in _food_logs_cache if k[0] == uid]:
+            del _food_logs_cache[key]
+
+
+# Вставляет/заменяет запись в кэше дня, если день уже закеширован.
+# Используется после insert/update food_logs (без лишнего GET).
+def _upsert_food_log_in_cache(user_id: int, row: dict[str, Any]) -> None:
+    if not user_id or not row:
+        return
+    logged_date = str(row.get("logged_date") or "")
+    log_id = row.get("id")
+    if not logged_date or log_id is None:
+        return
+    key = (int(user_id), logged_date)
+    with _food_logs_cache_lock:
+        cached = _food_logs_cache.get(key)
+        if cached is None:
+            return
+        clone = _clone_food_log_row(row)
+        replaced = False
+        for i, old in enumerate(cached):
+            if int(old.get("id") or 0) == int(log_id):
+                cached[i] = clone
+                replaced = True
+                break
+        if not replaced:
+            cached.append(clone)
+        cached.sort(key=lambda r: int(r.get("created_at") or 0))
+
+
+# Удаляет запись из любого закешированного дня пользователя.
+# Используется после delete_food_log.
+def _remove_food_log_from_cache(user_id: int, log_id: int) -> None:
+    if not user_id or not log_id:
+        return
+    uid = int(user_id)
+    lid = int(log_id)
+    with _food_logs_cache_lock:
+        for key, rows in list(_food_logs_cache.items()):
+            if key[0] != uid:
+                continue
+            filtered = [r for r in rows if int(r.get("id") or 0) != lid]
+            if len(filtered) != len(rows):
+                _food_logs_cache[key] = filtered
+                return
+
+
+# Записи дневника за логическую дату YYYY-MM-DD (кэш process-local).
+# force=True — всегда GET в NocoDB и перезапись кэша (кнопка «🔄 Обновить»).
+# Используется главным меню, дневником, удалением и выгрузкой «сегодня».
+def get_food_logs_for_date(
+    user_id: int, logged_date: str, *, force: bool = False
+) -> list[dict[str, Any]]:
+    key = (int(user_id), str(logged_date))
+    if not force:
+        with _food_logs_cache_lock:
+            cached = _food_logs_cache.get(key)
+            if cached is not None:
+                return _clone_food_logs(cached)
+    rows = db.get_food_logs_for_date(user_id, logged_date)
+    _put_food_logs_cache(user_id, logged_date, rows)
+    return _clone_food_logs(rows)
 
 
 # Записи за диапазон дат [date_from, date_to] включительно.
@@ -734,15 +1044,18 @@ def get_food_logs_range(
     return db.get_food_logs_range(user_id, date_from, date_to)
 
 
-# Удаление записи food_logs по id (только свои).
+# Удаление записи food_logs по id (только свои) + патч кэша дня.
 # Используется флоу «Удалить блюдо» в дневнике.
 def delete_food_log(
     user_id: int, log_id: int, *, check_owner: bool = True
 ) -> bool:
-    return db.delete_food_log(user_id, log_id, check_owner=check_owner)
+    ok = db.delete_food_log(user_id, log_id, check_owner=check_owner)
+    if ok:
+        _remove_food_log_from_cache(user_id, log_id)
+    return ok
 
 
-# PATCH полей food_logs после текстовой правки через Gemini.
+# PATCH полей food_logs после текстовой правки через Gemini + патч кэша.
 # Используется флоу «Изменить блюдо» (из FSM — check_owner=False).
 def update_food_log(
     user_id: int,
@@ -757,7 +1070,7 @@ def update_food_log(
     details_json: dict[str, Any] | None = None,
     check_owner: bool = True,
 ) -> dict[str, Any] | None:
-    return db.update_food_log(
+    row = db.update_food_log(
         user_id,
         log_id,
         title=title,
@@ -769,6 +1082,11 @@ def update_food_log(
         details_json=details_json,
         check_owner=check_owner,
     )
+    if row is not None:
+        _upsert_food_log_in_cache(user_id, row)
+    else:
+        invalidate_food_logs_cache(user_id)
+    return row
 
 
 # INSERT food_logs после ✅ распознавания (emoji → details_json).
@@ -793,6 +1111,7 @@ def insert_food_log_from_result(
         logged_date=logged_date,
         details_json=details,
     )
+    _upsert_food_log_in_cache(user_id, row)
     try:
         db.mark_last_food_logged_on(user_id, logged_date)
         _patch_user_cache(user_id, {"last_food_logged_on": str(logged_date)})
@@ -805,10 +1124,12 @@ def insert_food_log_from_result(
 
 
 # Обновление day_change_hour в users + optimistic patch кэша.
+# Сбрасывает кэш food_logs: логическая «сегодня» сдвигается.
 # Используется настройкой «Время смены суток».
 def set_day_change_hour(user_id: int, hour: int) -> None:
     db.set_day_change_hour(user_id, hour)
     _patch_user_cache(user_id, {"day_change_hour": int(hour)})
+    invalidate_food_logs_cache(user_id)
 
 
 # Обновление goal в users + optimistic patch кэша.
@@ -826,6 +1147,7 @@ def set_daily_calories(user_id: int, calories: int) -> None:
 
 
 # Запись полей профиля из первичного опроса + кладёт ответ upsert в кэш.
+# Сбрасывает кэш food_logs (timezone / граница суток могут смениться).
 # Используется on_survey_complete после прохождения initial_survey.
 def set_profile(
     user_id: int,
@@ -853,6 +1175,7 @@ def set_profile(
         daily_calories=daily_calories,
     )
     _put_user_cache(user_id, row)
+    invalidate_food_logs_cache(user_id)
 
 
 # Вкл/выкл users.usage_reminder_enabled + patch кэша.
@@ -874,6 +1197,7 @@ def mark_usage_reminder_sent(user_id: int, sent_on: str) -> None:
 FEEDBACK_KIND_LABELS = {
     "bug": "Сообщение об ошибке",
     "idea": "Предложение по улучшению функционала",
+    "support": "Поддержка оплаты",
 }
 
 
@@ -929,6 +1253,7 @@ async def send_feedback_email(
         f"Тип: {kind_label}\n"
         f"user_id: {user_id}\n"
         f"username: {uname}\n"
+        f"Профиль: https://t.me/user?id={user_id}\n"
         f"\n"
         f"Сообщение:\n"
         f"{text or '(без текста)'}\n"
@@ -995,12 +1320,15 @@ def set_reminder_active(
     )
 
 
-# Удаление напоминания.
+# Удаление напоминания (+ снятие с очереди «на ближайший приём»).
 # Используется карточкой «Мои напоминания». check_owner=False если id из FSM.
 def delete_reminder(
     user_id: int, reminder_id: int, *, check_owner: bool = True
 ) -> bool:
-    return db.delete_reminder(user_id, reminder_id, check_owner=check_owner)
+    ok = db.delete_reminder(user_id, reminder_id, check_owner=check_owner)
+    if ok:
+        _clear_reminder_pending_meal(reminder_id)
+    return ok
 
 
 # Параллельный PATCH нескольких reminders (одно поле на id).
@@ -1080,6 +1408,7 @@ def snooze_reminder(
 
 # После INSERT в food_logs: активные reminders в текущем окне времени,
 # calories >= min_calories, ещё не срабатывали сегодня → пометить и вернуть список.
+# Плюс отложенные после пропуска (pending next meal) — вне окна, по min_calories.
 # Один GET reminders + параллельные PATCH; без повторного list.
 # Используется колбэком on_food_saved из food_recognition.
 def trigger_reminders_for_food(
@@ -1098,6 +1427,8 @@ def trigger_reminders_for_food(
             continue
         if row.get("is_triggered_today"):
             continue
+        if _is_reminder_pending_meal(int(row["id"])):
+            continue
         if not (row["time_start"] <= now_hm <= row["time_end"]):
             continue
         if kcal < int(row.get("min_calories") or 0):
@@ -1114,6 +1445,7 @@ def trigger_reminders_for_food(
             kcal,
         )
     _patch_reminders_parallel(mark_ids, {"is_triggered_today": True})
+    triggered.extend(_trigger_pending_meal_reminders(user_id, kcal, rows))
     return triggered
 
 
@@ -1129,6 +1461,7 @@ def check_missed_reminders(user_id: int) -> list[dict[str, Any]]:
 
 # Ядро missed-check по уже загруженным rows (+ сброс суток).
 # user — опционально уже загруженный профиль (maintenance без GET).
+# Pending «на ближайший приём» пропускаем; при старте следующего окна — expire.
 # Используется check_missed_reminders и _collect_missed_reminder_targets.
 def _check_missed_reminders_for_rows(
     user_id: int,
@@ -1138,6 +1471,7 @@ def _check_missed_reminders_for_rows(
 ) -> list[dict[str, Any]]:
     profile = user if user is not None else get_user(user_id)
     rows = _reset_reminder_triggers_if_new_day(user_id, rows, user=profile)
+    _expire_pending_meal_reminders(user_id, user=profile)
     now_hm = datetime.now(ZoneInfo(profile["timezone"])).strftime("%H:%M")
     missed: list[dict[str, Any]] = []
     mark_ids: list[int] = []
@@ -1145,6 +1479,8 @@ def _check_missed_reminders_for_rows(
         if not row.get("is_active"):
             continue
         if row.get("is_triggered_today"):
+            continue
+        if _is_reminder_pending_meal(int(row["id"])):
             continue
         time_end = str(row.get("time_end") or "")
         if not time_end or now_hm <= time_end:
@@ -1395,7 +1731,35 @@ def kb_main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_DIARY)],
+            [KeyboardButton(text=BTN_TARIFFS)],
             [KeyboardButton(text=BTN_RECOGNIZE), KeyboardButton(text=BTN_SETTINGS)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# Reply-клавиатура раздела «Тарифы»: бесплатный / премиум / поддержка.
+# Используется show_tariffs и возвратами с экрана оплаты / поддержки.
+def kb_tariffs() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_TARIFF_FREE)],
+            [KeyboardButton(text=BTN_TARIFF_PREMIUM)],
+            [KeyboardButton(text=BTN_TARIFF_SUPPORT)],
+            [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+# Reply-клавиатура экрана оплаты премиума.
+# Используется show_tariff_pay.
+def kb_tariff_pay() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_TARIFF_PAY)],
+            [KeyboardButton(text=BTN_TARIFF_SUPPORT)],
+            [KeyboardButton(text=BTN_BACK), KeyboardButton(text=BTN_MAIN_MENU)],
         ],
         resize_keyboard=True,
     )
@@ -1680,7 +2044,7 @@ def kb_survey_usage_ok() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🟩 Хорошо",
+                    text="Хорошо",
                     callback_data=CALLBACK_SURVEY_USAGE_OK,
                 )
             ]
@@ -1692,7 +2056,7 @@ def kb_survey_usage_ok() -> InlineKeyboardMarkup:
 # Используется _show_survey_pin_reminder и таймером _run_survey_pin_countdown.
 def kb_survey_pin(*, ready: bool = False, seconds: int = SURVEY_PIN_COUNTDOWN_SEC) -> InlineKeyboardMarkup:
     if ready:
-        text = "Готово"
+        text = "✅ Готово"
         data = CALLBACK_SURVEY_PIN_DONE
     else:
         text = f"Жду выполнения ({seconds})"
@@ -1774,17 +2138,23 @@ def kb_reminder_notify(reminder_id: int) -> InlineKeyboardMarkup:
     )
 
 
-# Inline под уведомлением о пропущенном окне напоминания (только закрыть).
+# Inline под уведомлением о пропущенном окне: перенос на ближайший приём / ок.
 # Используется reminders_maintenance_loop.
-def kb_reminder_missed_ok(reminder_id: int) -> InlineKeyboardMarkup:
+def kb_reminder_missed(reminder_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="➡️ Перенести на ближайший приём",
+                    callback_data=f"{CALLBACK_REM_DEFER_PREFIX}{reminder_id}",
+                )
+            ],
             [
                 InlineKeyboardButton(
                     text="✅ Понятно",
                     callback_data=f"{CALLBACK_REM_OK_PREFIX}{reminder_id}",
                 )
-            ]
+            ],
         ]
     )
 
@@ -2048,6 +2418,7 @@ async def show_main_menu(
 
 # Пересобирает карточку главного экрана на месте (без новой «пыли»).
 # Используется inline «🔄 Обновить» после простоя на главном.
+# force=True у food_logs — обход кэша, свежий GET из NocoDB.
 async def refresh_main_menu_card(
     message: Message, state: FSMContext, *, user_id: int
 ) -> None:
@@ -2055,7 +2426,7 @@ async def refresh_main_menu_card(
     await state.update_data(diary_offset=0, export_return="main", menu_screen="main")
     user = await run_db(get_user, user_id)
     today = logical_today(user)
-    logs = await run_db(get_food_logs_for_date, user_id, today)
+    logs = await run_db(get_food_logs_for_date, user_id, today, force=True)
     text = format_day_card(
         user,
         today,
@@ -2251,6 +2622,45 @@ async def show_feedback_menu(message: Message, state: FSMContext) -> None:
         "\n"
         "Выберите, что хотите отправить:",
         reply_markup=kb_feedback(),
+    )
+
+
+# Экран выбора тарифа (бесплатный / премиум).
+# Используется кнопкой BTN_TARIFFS, «Назад» с оплаты/поддержки и после заглушки оплаты.
+# 🎈 Позже: отправлять картинку с достоинствами подписки перед/вместе с этим текстом.
+# 🎈 Позже: метка [Активно✅] по премиум-статусу из NocoDB (сейчас всегда бесплатный).
+async def show_tariffs(message: Message, state: FSMContext) -> None:
+    await state.set_state(None)
+    await state.update_data(menu_screen="tariffs")
+    await replace_ui(
+        message,
+        state,
+        "💎 Тарифы\n"
+        "\n"
+        "Тариф бесплатный (базовый) — до 10 распознаваний еды в сутки\n"
+        "Премиум доступ — безлимитное распознавание фото на 1 месяц",
+        reply_markup=kb_tariffs(),
+    )
+
+
+# Экран оплаты премиума: цена, срок, ссылки на оферту и политику.
+# Используется кнопкой BTN_TARIFF_PREMIUM и «Назад» из ввода поддержки (если с оплаты).
+async def show_tariff_pay(message: Message, state: FSMContext) -> None:
+    await state.set_state(None)
+    await state.update_data(menu_screen="tariffs_pay")
+    await replace_ui(
+        message,
+        state,
+        "⭐️ Премиум доступ\n"
+        "\n"
+        f"Безлимитное распознавание фото на {TARIFF_PREMIUM_DAYS} дней.\n"
+        f"Стоимость: {TARIFF_PRICE_RUB} рублей.\n"
+        "\n"
+        "Нажимая «Оплатить», вы принимаете условия "
+        f'<a href="{TARIFF_OFFER_URL}">Публичной оферты</a> и '
+        f'<a href="{TARIFF_PRIVACY_URL}">Политики конфиденциальности</a>.',
+        reply_markup=kb_tariff_pay(),
+        parse_mode="HTML",
     )
 
 
@@ -2530,7 +2940,8 @@ class DropStaleMessagesMiddleware(BaseMiddleware):
 
 
 dp.message.outer_middleware(DropStaleMessagesMiddleware())
-# Колбэк после подтверждения еды: INSERT food_logs → reminders.
+# Колбэк после подтверждения еды: INSERT food_logs (до «Учтено ✅»).
+# Reminders — в _on_after_food_ack, чтобы шли после ack в чате.
 # Передаётся в food_recognition.setup_food_recognition(on_food_saved=...).
 async def _on_food_saved(
     user_id: int,
@@ -2549,7 +2960,16 @@ async def _on_food_saved(
         )
         if is_ext:
             await notify_user_tech_issues(bot=bot, chat_id=chat_id)
-        return
+
+
+# Колбэк после «Учтено ✅»: trigger/notify reminders.
+# Передаётся в setup_food_recognition(on_after_food_ack=...).
+async def _on_after_food_ack(
+    user_id: int,
+    result: Any,
+    bot: Bot,
+    chat_id: int,
+) -> None:
     calories = int(getattr(result, "calories", 0) or 0)
     await notify_reminders_after_food(user_id, calories, bot, chat_id)
 
@@ -2740,6 +3160,7 @@ dp.include_router(
         menu_button_texts=MENU_BUTTON_TEXTS,
         main_menu_button_text=BTN_MAIN_MENU,
         on_food_saved=_on_food_saved,
+        on_after_food_ack=_on_after_food_ack,
     )
 )
 #endregion
@@ -2829,6 +3250,12 @@ async def on_diary(message: Message, state: FSMContext) -> None:
     await show_diary(message, state)
 
 
+# Открыть раздел тарифов.
+@menu_router.message(F.text == BTN_TARIFFS)
+async def on_tariffs(message: Message, state: FSMContext) -> None:
+    await show_tariffs(message, state)
+
+
 # Экран-памятка «Распознать».
 @menu_router.message(F.text == BTN_RECOGNIZE)
 async def on_recognize(message: Message, state: FSMContext) -> None:
@@ -2839,6 +3266,132 @@ async def on_recognize(message: Message, state: FSMContext) -> None:
 @menu_router.message(F.text == BTN_SETTINGS)
 async def on_settings(message: Message, state: FSMContext) -> None:
     await show_settings(message, state)
+
+
+#region Хендлеры: тарифы
+# Бесплатный тариф: пока всегда активен (премиум в БД ещё нет).
+# 🎈 Позже: если премиум активен — другая подпись / сообщение.
+@menu_router.message(F.text == BTN_TARIFF_FREE)
+async def on_tariff_free(message: Message, state: FSMContext) -> None:
+    await state.set_state(None)
+    await state.update_data(menu_screen="tariffs")
+    await replace_ui(
+        message,
+        state,
+        "У вас уже активирован базовый тариф — доступно 10 распознаваний в сутки",
+        reply_markup=kb_tariffs(),
+    )
+
+
+# Переход к экрану оплаты премиума.
+@menu_router.message(F.text == BTN_TARIFF_PREMIUM)
+async def on_tariff_premium(message: Message, state: FSMContext) -> None:
+    await show_tariff_pay(message, state)
+
+
+# Заглушка оплаты: ЮKassa ещё не подключена; возврат в «Тарифы».
+# 🎈 Позже: создать платёж ЮKassa и выдать invoice / ссылку на оплату.
+@menu_router.message(F.text == BTN_TARIFF_PAY)
+async def on_tariff_pay(message: Message, state: FSMContext) -> None:
+    try:
+        await message.answer(
+            "У нас сейчас небольшие проблемы с сервисом оплаты, "
+            "пожалуйста попробуйте позднее"
+        )
+        await show_tariffs(message, state)
+    except Exception as exc:
+        report_console_error(f"tariff pay stub error: {exc}", exc=exc)
+        await message.answer(
+            "У нас сейчас небольшие проблемы с сервисом оплаты, "
+            "пожалуйста попробуйте позднее"
+        )
+        try:
+            await show_tariffs(message, state)
+        except Exception as exc2:
+            report_console_error(
+                f"tariff pay stub return error: {exc2}", exc=exc2
+            )
+
+
+# Старт ввода обращения в поддержку оплаты.
+@menu_router.message(F.text == BTN_TARIFF_SUPPORT)
+async def on_tariff_support(message: Message, state: FSMContext) -> None:
+    await state.set_state(MenuFlow.support_wait)
+    await state.update_data(menu_screen="tariffs", feedback_kind="support")
+    await replace_ui(
+        message,
+        state,
+        "💬 Поддержка\n"
+        "\n"
+        "Если у вас возникли вопросы или сложности при оплате — "
+        "напишите нам. Можно прикрепить один скриншот "
+        "(удобнее всего — фото с подписью).",
+        reply_markup=kb_nav_only(),
+    )
+
+
+# Приём текста поддержки оплаты → письмо на FEEDBACK_TO_EMAIL.
+@menu_router.message(MenuFlow.support_wait, F.text, ~F.text.in_(MENU_BUTTON_TEXTS))
+async def on_support_text(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.id if message.from_user else 0
+    username = message.from_user.username if message.from_user else None
+    text = (message.text or "").strip()
+    try:
+        await send_feedback_email(
+            user_id=user_id,
+            username=username,
+            kind="support",
+            text=text,
+        )
+    except Exception as exc:
+        report_console_error(f"support email error: {exc}", exc=exc)
+        await message.answer(
+            "Не удалось отправить сообщение. Попробуйте позже "
+            "или напишите разработчику напрямую"
+        )
+        return
+    await state.set_state(None)
+    await state.update_data(menu_screen="tariffs", feedback_kind=None)
+    await replace_ui(
+        message,
+        state,
+        "✅ Спасибо! Сообщение отправлено в поддержку",
+        reply_markup=kb_tariffs(),
+    )
+
+
+# Приём скриншота в поддержку оплаты → письмо с вложением.
+@menu_router.message(MenuFlow.support_wait, F.photo)
+async def on_support_photo(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.id if message.from_user else 0
+    username = message.from_user.username if message.from_user else None
+    text = (message.caption or "").strip()
+    photo = message.photo[-1]
+    try:
+        photo_bytes = await download_photo_bytes(message.bot, photo.file_id)
+        await send_feedback_email(
+            user_id=user_id,
+            username=username,
+            kind="support",
+            text=text,
+            photo_bytes=photo_bytes,
+        )
+    except Exception as exc:
+        report_console_error(f"support email error: {exc}", exc=exc)
+        await message.answer(
+            "Не удалось отправить сообщение. Попробуйте позже "
+            "или напишите разработчику напрямую"
+        )
+        return
+    await state.set_state(None)
+    await state.update_data(menu_screen="tariffs", feedback_kind=None)
+    await replace_ui(
+        message,
+        state,
+        "✅ Спасибо! Сообщение отправлено в поддержку",
+        reply_markup=kb_tariffs(),
+    )
+#endregion
 
 
 # «Назад»: из подменю — на уровень выше; из корня разделов — в главное меню.
@@ -2902,6 +3455,9 @@ async def on_back(message: Message, state: FSMContext) -> None:
         return
     if current == MenuFlow.feedback_wait.state:
         await show_feedback_menu(message, state)
+        return
+    if current == MenuFlow.support_wait.state:
+        await show_tariffs(message, state)
         return
     if current == MenuFlow.reminders_add_window.state:
         await state.set_state(MenuFlow.reminders_add_title)
@@ -2980,6 +3536,12 @@ async def on_back(message: Message, state: FSMContext) -> None:
         return
     if screen == "feedback":
         await show_settings(message, state)
+        return
+    if screen == "tariffs_pay":
+        await show_tariffs(message, state)
+        return
+    if screen == "tariffs":
+        await show_main_menu(message, state)
         return
     if screen == "help":
         await show_settings(message, state)
@@ -4205,6 +4767,33 @@ async def on_rem_snooze(callback: CallbackQuery, state: FSMContext) -> None:
                 pass
 
 
+# Inline: после пропуска — ждать ближайший приём (вне окна, по min_calories).
+@menu_router.callback_query(F.data.startswith(CALLBACK_REM_DEFER_PREFIX))
+async def on_rem_defer(callback: CallbackQuery, state: FSMContext) -> None:
+    raw = (callback.data or "").removeprefix(CALLBACK_REM_DEFER_PREFIX)
+    if not raw.isdigit():
+        await callback.answer()
+        return
+    user_id = callback.from_user.id
+    ok = await run_db(defer_reminder_to_next_meal, user_id, int(raw))
+    await callback.answer(
+        "Ждём ближайший приём" if ok else "Уже недоступно"
+    )
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        if ok:
+            try:
+                await callback.message.edit_text(
+                    f"{callback.message.text or ''}\n\n"
+                    "➡️ Перенесено на ближайший приём"
+                )
+            except Exception:
+                pass
+
+
 # Inline: подтвердить уведомление (кнопки убираем).
 @menu_router.callback_query(F.data.startswith(CALLBACK_REM_OK_PREFIX))
 async def on_rem_ok(callback: CallbackQuery, state: FSMContext) -> None:
@@ -4285,8 +4874,8 @@ def _collect_usage_reminder_targets() -> list[tuple[int, str]]:
 
 
 # Фоновый цикл раз в час: ищет пользователей без еды после 13:00 и пишет им.
-# Старт sleep(40) — оффсет от reminders_maintenance_loop (sleep 25), чтобы
-# два тяжёлых тика NocoDB не бились в одну секунду после рестарта.
+# Старт sleep(40) — оффсет от food_logs_cleanup (55) и от :05-тика
+# reminders_maintenance, чтобы тяжёлые тики NocoDB не бились вместе.
 # Используется main() рядом с polling.
 async def usage_reminder_loop(bot: Bot) -> None:
     await asyncio.sleep(40)
@@ -4354,6 +4943,7 @@ def _collect_missed_reminder_targets() -> list[tuple[int, dict[str, Any]]]:
             if reminders_frozen(user_id, user=user):
                 # Всё равно сбрасываем сутки (флаги), но не шлём missed.
                 _reset_reminder_triggers_if_new_day(user_id, rows, user=user)
+                _expire_pending_meal_reminders(user_id, user=user)
                 continue
             missed = _check_missed_reminders_for_rows(user_id, rows, user=user)
             for row in missed:
@@ -4368,12 +4958,25 @@ def _collect_missed_reminder_targets() -> list[tuple[int, dict[str, Any]]]:
     return targets
 
 
-# Фоновый цикл раз в час: сброс is_triggered_today + «окно пропущено»
-# (учёт разных TZ без привязки к минутам окончания окон).
+# Секунды до ближайшей минуты `minute` каждого часа (серверные часы).
+# Используется reminders_maintenance_loop (тик на :05).
+def _seconds_until_hourly_minute(minute: int) -> float:
+    now = datetime.now()
+    target = now.replace(minute=minute, second=0, microsecond=0)
+    if now >= target:
+        target += timedelta(hours=1)
+    return max(0.0, (target - now).total_seconds())
+
+
+# Фоновый цикл: сброс is_triggered_today + «окно пропущено».
+# Тик ровно в REMINDER_MISSED_CHECK_MINUTE (:05) каждого часа —
+# после окончания окон на :00 (11:00 / 16:00 / 22:00).
 # Используется main() рядом с polling.
 async def reminders_maintenance_loop(bot: Bot) -> None:
-    await asyncio.sleep(25)
     while True:
+        await asyncio.sleep(
+            _seconds_until_hourly_minute(REMINDER_MISSED_CHECK_MINUTE)
+        )
         try:
             targets = await asyncio.to_thread(_collect_missed_reminder_targets)
             for user_id, row in targets:
@@ -4382,7 +4985,7 @@ async def reminders_maintenance_loop(bot: Bot) -> None:
                         user_id,
                         format_missed_reminder_text(row),
                         parse_mode="HTML",
-                        reply_markup=kb_reminder_missed_ok(int(row["id"])),
+                        reply_markup=kb_reminder_missed(int(row["id"])),
                     )
                 except Exception as e:
                     report_console_error(
@@ -4395,13 +4998,12 @@ async def reminders_maintenance_loop(bot: Bot) -> None:
                 f"reminders_maintenance_loop tick failed: {e}",
                 exc=e,
             )
-        await asyncio.sleep(REMINDER_MAINTENANCE_INTERVAL_SEC)
 #endregion
 
 #region Food logs retention (старше 100 дней)
 # Фоновый цикл раз в сутки: удаляет food_logs с logged_date старше
-# FOOD_LOG_RETENTION_DAYS. Старт sleep(55) — оффсет от usage (40) и
-# reminders_maintenance (25), чтобы три тика NocoDB не бились после рестарта.
+# FOOD_LOG_RETENTION_DAYS. Старт sleep(55) — оффсет от usage (40),
+# чтобы тики NocoDB не бились после рестарта.
 # Используется main() рядом с polling.
 async def food_logs_cleanup_loop() -> None:
     await asyncio.sleep(55)

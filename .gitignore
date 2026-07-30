@@ -3,5 +3,6 @@ API Gemini key.txt
 __pycache__/
 *.py[cod]
 .reminder_day_keys.json
+.reminder_pending_meal.json
 logs/
 *.log
