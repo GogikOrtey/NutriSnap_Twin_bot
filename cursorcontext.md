@@ -149,6 +149,7 @@ main.py
 - Фото перед Files API: `prepare_image_for_gemini` (Pillow) — EXIF-ориентация, длинная сторона ≤1024px, JPEG q=80; вызывается из `download_photo_temp`.
 - Без изменений флоу Gemini/FSM распознавания; `persist_confirmed_food` → консоль + `on_food_saved` (INSERT в main); после «Учтено ✅» → `notify_after_food_ack` / `on_after_food_ack` (reminders).
 - Статус анализа (`send_analysis_status`): «✨ Анализирую…» сразу с `ReplyKeyboardRemove` (без пустого stub+delete). Edit в превью обычно ок; fallback — новое сообщение.
+- Меню «✏️ Изменить» (`editing_choice`): сверху reply «✅ Всё верно, добавить так» (`BTN_EDIT_CONFIRM` / `on_edit_confirm`) — сохранить текущий `result` без правок (если случайно зашли в edit после превью; inline ✅ уже недоступен).
 
 ## Переменные окружения
 

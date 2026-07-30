@@ -113,6 +113,7 @@ CALLBACK_WEIGHT = "food:weight"
 CALLBACK_CANCEL = "food:cancel"
 
 # Тексты кнопок reply-клавиатуры меню «✏️ Изменить».
+BTN_EDIT_CONFIRM = "✅ Всё верно, добавить так"
 BTN_EDIT_WEIGHT = "✏️ Изменить вес порции"
 BTN_EDIT_HINT = "➕ Дополнить или уточнить описание блюда"
 BTN_EDIT_REPLACE = "🔄 Заменить описание или фото"
@@ -549,9 +550,11 @@ def build_main_menu_only_keyboard() -> ReplyKeyboardMarkup | ReplyKeyboardRemove
 
 
 # Reply-клавиатура меню правок после нажатия «✏️ Изменить» (+ «🏠 Главное меню»).
+# Сверху — «✅ Всё верно…» на случай случайного входа в правки.
 # Используется в on_edit → FoodFlow.editing_choice.
 def build_edit_menu_keyboard() -> ReplyKeyboardMarkup:
     rows: list[list[KeyboardButton]] = [
+        [KeyboardButton(text=BTN_EDIT_CONFIRM)],
         [KeyboardButton(text=BTN_EDIT_WEIGHT)],
         [KeyboardButton(text=BTN_EDIT_HINT)],
         [KeyboardButton(text=BTN_EDIT_REPLACE)],
@@ -1231,13 +1234,49 @@ async def on_edit(callback: CallbackQuery, state: FSMContext) -> None:
     except Exception:
         pass
     await callback.message.answer(
-        "Что поправить в результате?\n"
-        "Выберите действие на клавиатуре ниже:",
+        "Что поправить в результате?",
         reply_markup=build_edit_menu_keyboard(),
     )
 
 
 #region Меню правок (reply-кнопки)
+# Пункт «✅ Всё верно, добавить так»: сохранить результат без правок
+# (выход, если случайно нажали «✏️ Изменить»). Состояние editing_choice.
+@router.message(FoodFlow.editing_choice, F.text == BTN_EDIT_CONFIRM)
+async def on_edit_confirm(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    result_data = data.get("result")
+    if not result_data:
+        await message.answer(
+            "Нечего подтверждать. Пришлите фото или текст заново",
+            reply_markup=build_main_menu_only_keyboard(),
+        )
+        await state.clear()
+        return
+
+    result = FoodResult.model_validate(result_data)
+    user_id = message.from_user.id if message.from_user else message.chat.id
+    chat_id = message.chat.id
+    preview_message_id = data.get("preview_message_id")
+    await persist_confirmed_food(
+        result, user_id=user_id, bot=message.bot, chat_id=chat_id
+    )
+    await state.clear()
+    if preview_message_id is not None:
+        await finalize_confirmed_preview(
+            result,
+            bot=message.bot,
+            chat_id=chat_id,
+            message_id=preview_message_id,
+        )
+    await message.answer(
+        "Учтено ✅", reply_markup=build_main_menu_only_keyboard()
+    )
+    await notify_after_food_ack(
+        result, user_id=user_id, bot=message.bot, chat_id=chat_id
+    )
+
+
 # Пункт «✏️ Изменить вес порции»: переход к вводу граммов и пересчёту КБЖУ.
 # Используется в состоянии FoodFlow.editing_choice.
 @router.message(FoodFlow.editing_choice, F.text == BTN_EDIT_WEIGHT)
